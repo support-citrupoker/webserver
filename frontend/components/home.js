@@ -18,7 +18,7 @@ export default function Home () {
       <div class='parallax__layer parallax__layer__5' />
       <div class='parallax__layer parallax__layer__6'>
 
-        <Pricetracker />
+       <h1>Hello World.</h1>
 
       </div>
       <div class='parallax__cover border-t-4 border-white'>
