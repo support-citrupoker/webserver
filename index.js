@@ -14,6 +14,7 @@ import { dirname } from 'path'
 import cors from 'cors'
 import { HighLevel } from '@gohighlevel/api-client';
 import TallBobService from './services/tallbob.service.js';
+import greenlockStoreFs from 'greenlock-store-fs';
 import GHLService from './services/ghl.service.js';
 import webhookRoutes from './routes/webhooks.js';
 import MessageController from './controllers/message.controller.js';
@@ -185,9 +186,17 @@ function createHttpServer() {
 if (process.env.SSL_DOMAIN && process.env.SSL_EMAIL) {
   console.log('🔐 Setting up Greenlock SSL for domain:', process.env.SSL_DOMAIN);
   
+  // Import the store module properly
+  
   // Create DNS challenge plugin
   const dnsChallenge = acmeDnsCli.create({
     debug: true // This will show instructions for adding DNS TXT records
+  });
+  
+  // Create the store with proper configuration
+  const store = greenlockStoreFs.create({
+    configDir: path.join(__dirname, 'greenlock.d'),
+    debug: true
   });
   
   // Create Greenlock instance with DNS challenge
@@ -207,11 +216,8 @@ if (process.env.SSL_DOMAIN && process.env.SSL_EMAIL) {
     },
     challengeType: 'dns-01',
     
-    // Store configuration
-    store: {
-      module: 'greenlock-store-fs',
-      basePath: path.join(__dirname, 'greenlock.d')
-    },
+    // Store configuration - FIXED
+    store: store,
     
     approveDomains: async (opts) => {
       // Approve the main domain and www subdomain
