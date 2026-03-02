@@ -188,7 +188,7 @@ class TallBobService {
     try {
       const payload = {
         url: "https://cayked.store/tallbob/incoming",
-        event_type: "message.received"
+        event_type: "message_received"
       }
       const response = await this.client.post('/v2/webhooks', payload);
       console.log(response.data)
