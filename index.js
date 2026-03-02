@@ -186,99 +186,61 @@ function createHttpServer() {
 if (process.env.SSL_DOMAIN && process.env.SSL_EMAIL) {
   console.log('🔐 Setting up Greenlock SSL for domain:', process.env.SSL_DOMAIN);
   
+  // Create DNS challenge plugin
   const dnsChallenge = acmeDnsCli.create({
     debug: true,
     dnsServers: ['8.8.8.8', '1.1.1.1'],
     waitFor: 120
   });
   
+  // Create Greenlock instance - SIMPLIFIED
   const greenlock = Greenlock.create({
     version: 'draft-12',
     server: process.env.ACME_DIRECTORY_URL || 'https://acme-v02.api.letsencrypt.org/directory',
     email: process.env.SSL_EMAIL,
     agreeTos: true,
     configDir: path.join(__dirname, 'greenlock.d'),
-    communityMember: true,
-    securityUpdates: true,
-    packageRoot: __dirname,
     challenges: { 'dns-01': dnsChallenge },
     challengeType: 'dns-01',
-    store: {
-      module: 'greenlock-store-fs',
-      basePath: path.join(__dirname, 'greenlock.d')
-    },
-    approveDomains: async (opts) => {
-      opts.domains = [process.env.SSL_DOMAIN];
-      if (!process.env.SSL_DOMAIN.startsWith('www.')) {
-        opts.domains.push(`www.${process.env.SSL_DOMAIN}`);
-      }
-      opts.email = process.env.SSL_EMAIL;
-      opts.agreeTos = true;
-      return opts;
-    }
+    approveDomains: [process.env.SSL_DOMAIN, `www.${process.env.SSL_DOMAIN}`]
   });
 
   let httpsReady = false;
   
-  async function startHttpsWithRetry(retries = 3) {
-    for (let i = 0; i < retries; i++) {
-      try {
-        console.log(`⏳ Attempt ${i + 1}/${retries} to obtain certificates...`);
+  // Start HTTPS setup
+  (async () => {
+    try {
+      console.log('⏳ Obtaining certificates...');
+      const certs = await greenlock.get({ servername: process.env.SSL_DOMAIN });
+      
+      if (certs) {
+        console.log('✅ Certificates obtained');
         
-        const certs = await greenlock.get({ servername: process.env.SSL_DOMAIN });
-        
-        if (certs) {
-          console.log('✅ Certificates obtained successfully');
-          
-          https.createServer(greenlock.tlsOptions, app).listen(HTTPS_PORT, () => {
-            httpsReady = true;
-            console.log(`✅ HTTPS Server running on port ${HTTPS_PORT}`);
-            console.log(`🔒 Secure access: https://${process.env.SSL_DOMAIN}`);
-          });
-          
-          return true; // Success
-        }
-      } catch (err) {
-        console.log(`❌ Attempt ${i + 1} failed:`, err.message);
-        
-        if (err.code === 'EDESTRUCTION' || err.message.includes('DNS')) {
-          console.log('⏳ DNS issue detected - waiting 30 seconds before retry...');
-          await new Promise(resolve => setTimeout(resolve, 30000));
-        } else {
-          await new Promise(resolve => setTimeout(resolve, 5000));
-        }
+        https.createServer(greenlock.tlsOptions, app).listen(HTTPS_PORT, () => {
+          httpsReady = true;
+          console.log(`✅ HTTPS Server running on port ${HTTPS_PORT}`);
+          console.log(`🔒 Secure access: https://${process.env.SSL_DOMAIN}`);
+        });
       }
+    } catch (err) {
+      console.error('❌ HTTPS setup failed:', err.message);
+      console.log('⚠️ Falling back to HTTP');
+      createHttpServer();
     }
-    
-    console.log('❌ All HTTPS setup attempts failed. Falling back to HTTP.');
-    return false;
-  }
+  })();
 
-  // Start HTTPS setup (don't await - let it run in background)
-  startHttpsWithRetry(5).then(success => {
-    if (!success) {
-      console.log('⚠️ Running HTTP only. HTTPS will be attempted on next restart.');
-    }
-  });
-
-  // HTTP server with smart redirect
+  // HTTP server
   http.createServer((req, res) => {
     if (httpsReady && process.env.REDIRECT_HTTP_TO_HTTPS === 'true') {
       const host = req.headers.host?.split(':')[0] || process.env.SSL_DOMAIN;
       res.writeHead(301, { Location: `https://${host}${req.url}` });
       res.end();
     } else {
-      // Serve HTTP content while HTTPS isn't ready
       app(req, res);
     }
   }).listen(PORT, () => {
-    console.log(`📡 HTTP server running on port ${PORT}`);
-    if (process.env.REDIRECT_HTTP_TO_HTTPS === 'true') {
-      console.log('↪️ Will redirect to HTTPS once certificates are ready');
-    }
-  });
-  
+    console.log(`📡 HTTP server on port ${PORT}`);
+  })
 } else {
-  console.log('⚠️ SSL not configured. Running HTTP only.');
   createHttpServer();
 }
