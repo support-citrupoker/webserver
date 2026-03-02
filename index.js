@@ -61,68 +61,11 @@ app.use(helmet({
 // Your routes
 app.post('/api/send-and-sync', (req, res) => messageController.sendAndSync(req, res));
 app.get('/api/status/:messageId', (req, res) => messageController.getStatus(req, res));
-
-// Tall Bob test endpoint
 app.get('/test/tallbob', async (req, res) => {
-  console.log('🧪 Running Tall Bob connection test...');
-  console.log('Using API Username:', process.env.TALLBOB_API_USERNAME);
-  console.log('API Key length:', process.env.TALLBOB_API_KEY?.length);
-  console.log('Base URL:', tallbobService.baseURL);
-  
-  try {
-    const smsResult = await tallbobService.sendSMS({
-      to: '61499000100',
-      from: 'TestSender',
-      message: 'Tall Bob integration test message',
-      reference: `test_${Date.now()}`
-    });
+  // ... your test code (keep as is)
+});
 
-    let statusResult = null;
-    if (smsResult && smsResult.messageId) {
-      console.log('\n--- Test 2: Getting message status ---');
-      statusResult = await tallbobService.getMessageStatus(smsResult.messageId);
-    }
-
-    let mmsResult = null;
-    try {
-      console.log('\n--- Test 3: Testing MMS (optional) ---');
-      mmsResult = await tallbobService.sendMMS({
-        to: '61499000100',
-        from: 'TestSender',
-        message: 'Test MMS message',
-        mediaUrl: 'https://via.placeholder.com/150',
-        reference: `test_mms_${Date.now()}`
-      });
-    } catch (mmsError) {
-      mmsResult = { error: mmsError.message, note: 'MMS test failed - may require valid media URL' };
-    }
-
-    res.json({
-      success: true,
-      timestamp: new Date().toISOString(),
-      environment: process.env.NODE_ENV || 'development',
-      tests: {
-        sms: { success: true, data: smsResult },
-        status: statusResult ? { success: true, data: statusResult } : { success: false, note: 'No message ID returned' },
-        mms: mmsResult ? { success: !mmsResult.error, data: mmsResult } : { success: false, note: 'MMS test skipped' }
-      }
-    });
-
-  } catch (error) {
-    console.error('❌ Tall Bob test failed:', error);
-    res.status(500).json({
-      success: false,
-      timestamp: new Date().toISOString(),
-      error: error.message,
-      details: error.response?.data || null
-    });
-  }
-})
-
-// Routes
 routes(app)
-
-// Webhooks
 app.use('/webhooks', webhookRoutes(tallbobService, ghlService, messageController));
 app.use(express.static('dist'))
 
@@ -136,11 +79,16 @@ app.use((err, req, res, next) => {
 });
 
 // ============================================
-// SIMPLE HTTPS SERVER WITH YOUR PFX CERTIFICATE
+// HTTPS SERVER WITH PEM FILES (NO ENCRYPTION ISSUES)
 // ============================================
 const HTTP_PORT = process.env.PORT || 3000;
 const HTTPS_PORT = 443;
-const pfxPath = 'C:\\certificates\\cayked.store.pfx';
+const certDir = 'C:\\certificates\\';
+
+// Paths to your PEM files
+const certPath = path.join(certDir, 'cayked.store.crt.pem');
+const keyPath = path.join(certDir, 'cayked.store.key.pem');
+const chainPath = path.join(certDir, 'cayked.store.chain.pem');
 
 // Function to start HTTP server (fallback)
 function startHttpServer() {
@@ -151,23 +99,26 @@ function startHttpServer() {
   });
 }
 
-// Check if certificate exists
-if (fs.existsSync(pfxPath)) {
+// Check if certificate files exist
+if (fs.existsSync(certPath) && fs.existsSync(keyPath)) {
   try {
-    console.log('🔐 Found SSL certificate, starting HTTPS server...');
+    console.log('🔐 Found SSL certificates, starting HTTPS server...');
     
     const httpsOptions = {
-      pfx: fs.readFileSync(pfxPath),
-      passphrase: '' // No password (you selected option 1)
+      key: fs.readFileSync(keyPath),
+      cert: fs.readFileSync(certPath)
     };
+    
+    // Add chain if it exists (optional)
+    if (fs.existsSync(chainPath)) {
+      httpsOptions.ca = fs.readFileSync(chainPath);
+    }
 
     // Start HTTPS server
     https.createServer(httpsOptions, app).listen(HTTPS_PORT, () => {
       console.log(`✅ HTTPS Server running on port ${HTTPS_PORT}`);
       console.log(`🔒 Secure access: https://cayked.store`);
       console.log(`🔒 Secure access: https://www.cayked.store`);
-      console.log(`📱 Tall Bob service: ${tallbobService.baseURL}`);
-      console.log(`📊 GHL service: configured`);
     });
 
     // Redirect HTTP to HTTPS
@@ -177,6 +128,8 @@ if (fs.existsSync(pfxPath)) {
       res.end();
     }).listen(HTTP_PORT, () => {
       console.log(`↪️ HTTP on port ${HTTP_PORT} redirecting to HTTPS`);
+      console.log(`📱 Tall Bob service: ${tallbobService.baseURL}`);
+      console.log(`📊 GHL service: configured`);
     });
 
   } catch (err) {
@@ -185,8 +138,10 @@ if (fs.existsSync(pfxPath)) {
     startHttpServer();
   }
 } else {
-  console.log(`⚠️ SSL certificate not found at: ${pfxPath}`);
-  console.log('💡 Run win-acme first to generate the certificate');
-  console.log('📁 Expected path:', pfxPath);
+  console.log(`⚠️ SSL certificates not found in: ${certDir}`);
+  console.log('📁 Expected files:');
+  console.log(`   - ${certPath}`);
+  console.log(`   - ${keyPath}`);
+  console.log('💡 Run win-acme first to generate PEM files');
   startHttpServer();
 }
