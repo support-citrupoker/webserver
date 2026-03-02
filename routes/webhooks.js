@@ -11,6 +11,8 @@ export default (tallbobService, ghlService) => {
   router.post('/tallbob/incoming', async (req, res) => {
     try {
       const messageData = req.body;
+
+      console.log(messageData)
       
       // Log incoming message for debugging
       console.log('Received Tall Bob webhook:', messageData);
@@ -81,7 +83,7 @@ export default (tallbobService, ghlService) => {
         error: error.message 
       });
     }
-  });
+  })
 
   /**
    * Webhook for message delivery receipts from Tall Bob

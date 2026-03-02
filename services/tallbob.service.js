@@ -187,7 +187,7 @@ class TallBobService {
   async createWebhook() {
     try {
       const payload = {
-        url: "https://nodejswebserver.com/message-recieved",
+        url: "https://cayked.store/tallbob/incoming",
         event_type: "message.received"
       }
       console.log(`🔗 Creating webhook for URL: ${url}`);
