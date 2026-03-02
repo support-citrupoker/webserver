@@ -75,6 +75,7 @@ app.get('/test/tallbob', async (req, res) => {
     console.log(error)
   }
   
+  /*
   try {
     const smsResult = await tallbobService.sendSMS({
       to: '61499000100',
@@ -122,7 +123,8 @@ app.get('/test/tallbob', async (req, res) => {
       error: error.message,
       details: error.response?.data || null
     });
-  }
+  }*/
+
 })
 
 // Routes
