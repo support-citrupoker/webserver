@@ -192,6 +192,7 @@ class TallBobService {
       }
       console.log(`🔗 Creating webhook for URL: ${url}`);
       const response = await this.client.post('/v2/webhooks', payload);
+      console.log(response.data)
       return response.data;
     } catch (error) {
       console.error('Failed to create Tall Bob webhook:', error.response?.data || error.message);

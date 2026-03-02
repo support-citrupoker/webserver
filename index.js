@@ -68,6 +68,12 @@ app.get('/test/tallbob', async (req, res) => {
   console.log('Using API Username:', process.env.TALLBOB_API_USERNAME);
   console.log('API Key length:', process.env.TALLBOB_API_KEY?.length);
   console.log('Base URL:', tallbobService.baseURL);
+
+  try {
+    await tallbobService.createWebhook()
+  } catch (error) {
+    console.log(error)
+  }
   
   try {
     const smsResult = await tallbobService.sendSMS({
