@@ -193,7 +193,7 @@ if (process.env.SSL_DOMAIN && process.env.SSL_EMAIL) {
     waitFor: 120
   });
   
-  // Create Greenlock instance - SIMPLIFIED
+  // Create Greenlock instance
   const greenlock = Greenlock.create({
     version: 'draft-12',
     server: process.env.ACME_DIRECTORY_URL || 'https://acme-v02.api.letsencrypt.org/directory',
@@ -207,30 +207,41 @@ if (process.env.SSL_DOMAIN && process.env.SSL_EMAIL) {
 
   let httpsReady = false;
   
-  // Start HTTPS setup
+  // Start HTTPS setup in background
   (async () => {
     try {
       console.log('⏳ Obtaining certificates...');
-      const certs = await greenlock.get({ servername: process.env.SSL_DOMAIN });
       
-      if (certs) {
+      // Check if we already have certificates
+      const certs = await greenlock.getCertificates({ servername: process.env.SSL_DOMAIN });
+      
+      if (certs && certs.privateKey && certs.cert) {
         console.log('✅ Certificates obtained');
         
+        // Create HTTPS server
         https.createServer(greenlock.tlsOptions, app).listen(HTTPS_PORT, () => {
           httpsReady = true;
           console.log(`✅ HTTPS Server running on port ${HTTPS_PORT}`);
           console.log(`🔒 Secure access: https://${process.env.SSL_DOMAIN}`);
         });
+      } else {
+        console.log('⚠️ Certificates not ready yet. Will retry in 60 seconds...');
+        // Retry after 60 seconds
+        setTimeout(() => {
+          console.log('🔄 Retrying certificate acquisition...');
+          // Reload the process or handle retry logic
+        }, 60000);
       }
     } catch (err) {
       console.error('❌ HTTPS setup failed:', err.message);
-      console.log('⚠️ Falling back to HTTP');
-      createHttpServer();
+      if (err.message.includes('DNS')) {
+        console.log('📝 DNS issue detected. Make sure TXT records are added and propagated.');
+      }
     }
   })();
 
-  // HTTP server
-  http.createServer((req, res) => {
+  // HTTP server with error handling
+  const httpServer = http.createServer((req, res) => {
     if (httpsReady && process.env.REDIRECT_HTTP_TO_HTTPS === 'true') {
       const host = req.headers.host?.split(':')[0] || process.env.SSL_DOMAIN;
       res.writeHead(301, { Location: `https://${host}${req.url}` });
@@ -238,9 +249,24 @@ if (process.env.SSL_DOMAIN && process.env.SSL_EMAIL) {
     } else {
       app(req, res);
     }
-  }).listen(PORT, () => {
+  });
+
+  httpServer.on('error', (err) => {
+    if (err.code === 'EADDRINUSE') {
+      console.error(`❌ Port ${PORT} is already in use.`);
+      console.log('💡 Run these commands to fix:');
+      console.log(`   netstat -ano | findstr :${PORT}`);
+      console.log('   taskkill /PID [PID] /F');
+      process.exit(1);
+    } else {
+      console.error('HTTP server error:', err);
+    }
+  });
+
+  httpServer.listen(PORT, () => {
     console.log(`📡 HTTP server on port ${PORT}`);
-  })
+  });
+  
 } else {
   createHttpServer();
 }
