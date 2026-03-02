@@ -58,18 +58,75 @@ app.use(helmet({
   contentSecurityPolicy: true
 }))
 
-// Your routes
+// Test endpoints
 app.post('/api/send-and-sync', (req, res) => messageController.sendAndSync(req, res));
 app.get('/api/status/:messageId', (req, res) => messageController.getStatus(req, res));
-app.get('/test/tallbob', async (req, res) => {
-  // ... your test code (keep as is)
-});
 
+// Tall Bob test endpoint
+app.get('/test/tallbob', async (req, res) => {
+  console.log('🧪 Running Tall Bob connection test...');
+  console.log('Using API Username:', process.env.TALLBOB_API_USERNAME);
+  console.log('API Key length:', process.env.TALLBOB_API_KEY?.length);
+  console.log('Base URL:', tallbobService.baseURL);
+  
+  try {
+    const smsResult = await tallbobService.sendSMS({
+      to: '61499000100',
+      from: 'TestSender',
+      message: 'Tall Bob integration test message',
+      reference: `test_${Date.now()}`
+    });
+
+    let statusResult = null;
+    if (smsResult && smsResult.messageId) {
+      console.log('\n--- Getting message status ---');
+      statusResult = await tallbobService.getMessageStatus(smsResult.messageId);
+    }
+
+    let mmsResult = null;
+    try {
+      console.log('\n--- Testing MMS ---');
+      mmsResult = await tallbobService.sendMMS({
+        to: '61499000100',
+        from: 'TestSender',
+        message: 'Test MMS message',
+        mediaUrl: 'https://via.placeholder.com/150',
+        reference: `test_mms_${Date.now()}`
+      });
+    } catch (mmsError) {
+      mmsResult = { error: mmsError.message, note: 'MMS test failed' };
+    }
+
+    res.json({
+      success: true,
+      timestamp: new Date().toISOString(),
+      environment: process.env.NODE_ENV || 'development',
+      tests: {
+        sms: { success: true, data: smsResult },
+        status: statusResult ? { success: true, data: statusResult } : { success: false },
+        mms: mmsResult ? { success: !mmsResult.error, data: mmsResult } : { success: false }
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Tall Bob test failed:', error);
+    res.status(500).json({
+      success: false,
+      timestamp: new Date().toISOString(),
+      error: error.message,
+      details: error.response?.data || null
+    });
+  }
+})
+
+// Routes
 routes(app)
+
+// Webhooks
 app.use('/webhooks', webhookRoutes(tallbobService, ghlService, messageController));
 app.use(express.static('dist'))
 
-// Error handling
+// Error handling middleware
 app.use((err, req, res, next) => {
   console.error('❌ Unhandled error:', err.stack);
   res.status(500).json({ 
@@ -79,16 +136,16 @@ app.use((err, req, res, next) => {
 });
 
 // ============================================
-// HTTPS SERVER WITH PEM FILES (NO ENCRYPTION ISSUES)
+// HTTPS SERVER WITH PEM FILES (FIXED FILENAMES)
 // ============================================
 const HTTP_PORT = process.env.PORT || 3000;
 const HTTPS_PORT = 443;
 const certDir = 'C:\\certificates\\';
 
-// Paths to your PEM files
-const certPath = path.join(certDir, 'cayked.store.crt.pem');
-const keyPath = path.join(certDir, 'cayked.store.key.pem');
-const chainPath = path.join(certDir, 'cayked.store.chain.pem');
+// Paths to your PEM files (using your actual filenames)
+const certPath = path.join(certDir, 'cayked.store-crt.pem');
+const keyPath = path.join(certDir, 'cayked.store-key.pem');
+const chainPath = path.join(certDir, 'cayked.store-chain.pem');
 
 // Function to start HTTP server (fallback)
 function startHttpServer() {
@@ -102,16 +159,20 @@ function startHttpServer() {
 // Check if certificate files exist
 if (fs.existsSync(certPath) && fs.existsSync(keyPath)) {
   try {
-    console.log('🔐 Found SSL certificates, starting HTTPS server...');
+    console.log('\n🔐 Found SSL certificates, starting HTTPS server...');
+    console.log('📁 Using:');
+    console.log(`   - Cert: ${path.basename(certPath)}`);
+    console.log(`   - Key: ${path.basename(keyPath)}`);
     
     const httpsOptions = {
       key: fs.readFileSync(keyPath),
       cert: fs.readFileSync(certPath)
     };
     
-    // Add chain if it exists (optional)
+    // Add chain if it exists
     if (fs.existsSync(chainPath)) {
       httpsOptions.ca = fs.readFileSync(chainPath);
+      console.log(`   - Chain: ${path.basename(chainPath)}`);
     }
 
     // Start HTTPS server
@@ -138,10 +199,24 @@ if (fs.existsSync(certPath) && fs.existsSync(keyPath)) {
     startHttpServer();
   }
 } else {
-  console.log(`⚠️ SSL certificates not found in: ${certDir}`);
+  console.log(`\n❌ Certificate files not found in: ${certDir}`);
   console.log('📁 Expected files:');
-  console.log(`   - ${certPath}`);
-  console.log(`   - ${keyPath}`);
-  console.log('💡 Run win-acme first to generate PEM files');
+  console.log(`   - ${path.basename(certPath)} (exists: ${fs.existsSync(certPath)})`);
+  console.log(`   - ${path.basename(keyPath)} (exists: ${fs.existsSync(keyPath)})`);
+  
+  // List what's actually there
+  try {
+    console.log('\n📋 Your actual files:');
+    const files = fs.readdirSync(certDir);
+    files.forEach(file => {
+      if (file.includes('cayked.store')) {
+        console.log(`   - ${file}`);
+      }
+    });
+  } catch (e) {
+    console.log('   (Could not read directory)');
+  }
+  
+  console.log('\n✅ Starting HTTP server as fallback...');
   startHttpServer();
 }
