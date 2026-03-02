@@ -138,7 +138,7 @@ app.use((err, req, res, next) => {
 // ============================================
 // HTTPS SERVER WITH PEM FILES (FIXED FILENAMES)
 // ============================================
-const HTTP_PORT = process.env.PORT || 3000;
+const HTTP_PORT = process.env.PORT || 80;
 const HTTPS_PORT = 443;
 const certDir = 'C:\\certificates\\';
 
