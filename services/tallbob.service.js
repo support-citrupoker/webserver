@@ -190,7 +190,6 @@ class TallBobService {
         url: "https://cayked.store/tallbob/incoming",
         event_type: "message.received"
       }
-      console.log(`🔗 Creating webhook for URL: ${url}`);
       const response = await this.client.post('/v2/webhooks', payload);
       console.log(response.data)
       return response.data;
