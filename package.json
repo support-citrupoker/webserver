@@ -19,6 +19,7 @@
   },
   "dependencies": {
     "@gohighlevel/api-client": "^2.2.2",
+    "acme-dns-01-cli": "^3.0.7",
     "axios": "^1.13.6",
     "c": "^1.1.1",
     "chart.js": "^3.9.1",
