@@ -193,60 +193,93 @@ if (process.env.SSL_DOMAIN && process.env.SSL_EMAIL) {
     waitFor: 120
   });
   
-  // Create Greenlock instance
+  // Ensure domains are properly formatted strings
+  const mainDomain = String(process.env.SSL_DOMAIN).trim();
+  const wwwDomain = mainDomain.startsWith('www.') ? mainDomain : `www.${mainDomain}`;
+  
+  console.log('📋 Configuring domains:', mainDomain, wwwDomain);
+  
+  // Create Greenlock instance - FIXED approveDomains format
   const greenlock = Greenlock.create({
     version: 'draft-12',
     server: process.env.ACME_DIRECTORY_URL || 'https://acme-v02.api.letsencrypt.org/directory',
-    email: process.env.SSL_EMAIL,
+    email: String(process.env.SSL_EMAIL).trim(),
     agreeTos: true,
     configDir: path.join(__dirname, 'greenlock.d'),
     challenges: { 'dns-01': dnsChallenge },
     challengeType: 'dns-01',
-    approveDomains: [process.env.SSL_DOMAIN, `www.${process.env.SSL_DOMAIN}`]
+    // Use a function instead of an array for better compatibility
+    approveDomains: (opts) => {
+      opts.domains = [mainDomain, wwwDomain];
+      opts.email = String(process.env.SSL_EMAIL).trim();
+      opts.agreeTos = true;
+      return opts;
+    }
   });
 
   let httpsReady = false;
+  let httpsServer = null;
   
-  // Start HTTPS setup in background
+  // Start HTTPS setup
   (async () => {
     try {
-      console.log('⏳ Obtaining certificates...');
+      console.log('⏳ Obtaining certificates for', mainDomain);
       
-      // Check if we already have certificates
-      const certs = await greenlock.getCertificates({ servername: process.env.SSL_DOMAIN });
+      // Try to get existing certificates first
+      const certs = await greenlock.getCertificates({ servername: mainDomain });
       
       if (certs && certs.privateKey && certs.cert) {
-        console.log('✅ Certificates obtained');
+        console.log('✅ Found existing certificates');
         
         // Create HTTPS server
-        https.createServer(greenlock.tlsOptions, app).listen(HTTPS_PORT, () => {
+        httpsServer = https.createServer(greenlock.tlsOptions, app);
+        
+        httpsServer.listen(HTTPS_PORT, () => {
           httpsReady = true;
           console.log(`✅ HTTPS Server running on port ${HTTPS_PORT}`);
-          console.log(`🔒 Secure access: https://${process.env.SSL_DOMAIN}`);
+          console.log(`🔒 Secure access: https://${mainDomain}`);
         });
+
+        httpsServer.on('error', (err) => {
+          console.error('❌ HTTPS server error:', err.message);
+        });
+        
       } else {
-        console.log('⚠️ Certificates not ready yet. Will retry in 60 seconds...');
-        // Retry after 60 seconds
-        setTimeout(() => {
-          console.log('🔄 Retrying certificate acquisition...');
-          // Reload the process or handle retry logic
-        }, 60000);
+        console.log('⏳ No certificates found. Greenlock will request them...');
+        console.log('📝 Follow the DNS instructions above to add TXT records');
+        
+        // The certificates will be obtained automatically when first requested
+        // Just create the server and let Greenlock handle it
+        httpsServer = https.createServer(greenlock.tlsOptions, app);
+        
+        httpsServer.listen(HTTPS_PORT, () => {
+          console.log(`🔄 HTTPS Server starting on port ${HTTPS_PORT} (waiting for certificates...)`);
+        });
+
+        httpsServer.on('error', (err) => {
+          console.error('❌ HTTPS server error:', err.message);
+        });
+
+        // Greenlock will automatically get certificates when needed
+        httpsReady = true; // The server is running, even if certs aren't ready yet
       }
+      
     } catch (err) {
       console.error('❌ HTTPS setup failed:', err.message);
-      if (err.message.includes('DNS')) {
-        console.log('📝 DNS issue detected. Make sure TXT records are added and propagated.');
-      }
+      console.log('⚠️ HTTPS will not be available. Running HTTP only.');
     }
   })();
 
-  // HTTP server with error handling
+  // HTTP server with redirect
   const httpServer = http.createServer((req, res) => {
+    // Check if HTTPS is ready AND we should redirect
     if (httpsReady && process.env.REDIRECT_HTTP_TO_HTTPS === 'true') {
-      const host = req.headers.host?.split(':')[0] || process.env.SSL_DOMAIN;
-      res.writeHead(301, { Location: `https://${host}${req.url}` });
+      const host = req.headers.host?.split(':')[0] || mainDomain;
+      const httpsUrl = `https://${host}${req.url}`;
+      res.writeHead(301, { Location: httpsUrl });
       res.end();
     } else {
+      // Serve HTTP content
       app(req, res);
     }
   });
@@ -254,9 +287,7 @@ if (process.env.SSL_DOMAIN && process.env.SSL_EMAIL) {
   httpServer.on('error', (err) => {
     if (err.code === 'EADDRINUSE') {
       console.error(`❌ Port ${PORT} is already in use.`);
-      console.log('💡 Run these commands to fix:');
-      console.log(`   netstat -ano | findstr :${PORT}`);
-      console.log('   taskkill /PID [PID] /F');
+      console.log('💡 Run: taskkill /F /IM node.exe');
       process.exit(1);
     } else {
       console.error('HTTP server error:', err);
@@ -265,8 +296,12 @@ if (process.env.SSL_DOMAIN && process.env.SSL_EMAIL) {
 
   httpServer.listen(PORT, () => {
     console.log(`📡 HTTP server on port ${PORT}`);
+    if (process.env.REDIRECT_HTTP_TO_HTTPS === 'true') {
+      console.log('↪️ Will redirect to HTTPS once certificates are ready');
+    }
   });
   
 } else {
+  console.log('⚠️ SSL not configured. Running HTTP only.');
   createHttpServer();
 }
