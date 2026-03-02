@@ -7,6 +7,7 @@ import helmet from 'helmet'
 import http from 'http'
 import https from 'https' // ADD THIS
 import Greenlock from 'greenlock' // ADD THIS
+import acmeDnsCli from 'acme-dns-01-cli' // ADD THIS
 import routes from './routes/index.js'
 import { fileURLToPath } from 'url'
 import { dirname } from 'path'
@@ -181,33 +182,48 @@ function createHttpServer() {
   });
 }
 
-// Check if SSL is configured
 if (process.env.SSL_DOMAIN && process.env.SSL_EMAIL) {
   console.log('🔐 Setting up Greenlock SSL for domain:', process.env.SSL_DOMAIN);
   
-  // Create Greenlock instance
+  // Create DNS challenge plugin
+  const dnsChallenge = acmeDnsCli.create({
+    debug: true // This will show instructions for adding DNS TXT records
+  });
+  
+  // Create Greenlock instance with DNS challenge
   const greenlock = Greenlock.create({
-    version: 'draft-12', // Use latest ACME version
+    version: 'draft-12',
     server: process.env.ACME_DIRECTORY_URL || 'https://acme-v02.api.letsencrypt.org/directory',
     email: process.env.SSL_EMAIL,
     agreeTos: true,
-    configDir: path.join(__dirname, 'greenlock.d'), // Where certificates are stored
-    communityMember: true, // Helps fund Let's Encrypt
+    configDir: path.join(__dirname, 'greenlock.d'),
+    communityMember: true,
     securityUpdates: true,
-    // For Windows compatibility
     packageRoot: __dirname,
     
-    // Define the domains to manage
+    // Use DNS challenge instead of HTTP
+    challenges: {
+      'dns-01': dnsChallenge
+    },
+    challengeType: 'dns-01',
+    
+    // Store configuration
+    store: {
+      module: 'greenlock-store-fs',
+      basePath: path.join(__dirname, 'greenlock.d')
+    },
+    
     approveDomains: async (opts) => {
-      // Approve the main domain
+      // Approve the main domain and www subdomain
       opts.domains = [process.env.SSL_DOMAIN];
       
       // Add www subdomain if it's different
-      if (process.env.SSL_DOMAIN.startsWith('www.')) {
-        opts.domains.push(process.env.SSL_DOMAIN.substring(4));
-      } else if (!process.env.SSL_DOMAIN.startsWith('www.')) {
+      if (!process.env.SSL_DOMAIN.startsWith('www.')) {
         opts.domains.push(`www.${process.env.SSL_DOMAIN}`);
       }
+      
+      console.log('📋 Requesting certificates for domains:', opts.domains.join(', '));
+      console.log('📝 You will need to add DNS TXT records for these domains');
       
       opts.email = process.env.SSL_EMAIL;
       opts.agreeTos = true;
@@ -216,27 +232,26 @@ if (process.env.SSL_DOMAIN && process.env.SSL_EMAIL) {
   });
 
   // Create HTTPS server with Greenlock
-  https.createServer(greenlock.tlsOptions, app).listen(HTTPS_PORT, () => {
+  https.createServer(greenlock.tlsOptions, app).listen(HTTPS_PORT, async () => {
     console.log(`✅ HTTPS Server running on port ${HTTPS_PORT}`);
-    console.log(`🔒 Secure access: https://${process.env.SSL_DOMAIN}:${HTTPS_PORT}`);
+    console.log(`🔒 Secure access: https://${process.env.SSL_DOMAIN}`);
   });
 
   // Optional: Redirect HTTP to HTTPS
   if (process.env.REDIRECT_HTTP_TO_HTTPS === 'true') {
     http.createServer((req, res) => {
-      const httpsUrl = `https://${req.headers.host}${req.url}`.replace(`:${PORT}`, `:${HTTPS_PORT}`);
+      const host = req.headers.host?.split(':')[0] || process.env.SSL_DOMAIN;
+      const httpsUrl = `https://${host}${req.url}`;
       res.writeHead(301, { Location: httpsUrl });
       res.end();
     }).listen(PORT, () => {
-      console.log(`↪️ HTTP on port ${PORT} redirecting to HTTPS on ${HTTPS_PORT}`);
+      console.log(`↪️ HTTP on port ${PORT} redirecting to HTTPS`);
     });
   } else {
-    // Keep original HTTP server alongside HTTPS
     createHttpServer();
   }
   
 } else {
-  // No SSL configured, run HTTP only
   console.log('⚠️ SSL not configured. Running HTTP only.');
   console.log('💡 To enable HTTPS, set SSL_DOMAIN and SSL_EMAIL in your .env file');
   createHttpServer();
