@@ -130,8 +130,6 @@ app.get('/test/tallbob', async (req, res) => {
 // Routes
 routes(app, tallbobService, ghlService, messageController)
 
-// Webhooks
-app.use('/webhooks', webhookRoutes(tallbobService, ghlService, messageController));
 app.use(express.static('dist'))
 
 // Error handling middleware
