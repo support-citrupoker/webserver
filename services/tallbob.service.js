@@ -111,7 +111,7 @@ class TallBobService {
   async sendSMS({ to, message, from, reference }) {
     try {
       const payload = {
-        to: '61477273504',
+        to: '61428616133',
         message: message,
         from: '+61428616133',
         reference: reference
@@ -140,7 +140,7 @@ class TallBobService {
   async sendMMS({ to, message, from, mediaUrl, reference }) {
     try {
       const payload = {
-        to: '61477273504',
+        to: '61428616133',
         message: 'A picture is worth a thousand words...',
         from: '+61428616133',
         url: `https://picsum.photos/200/300.jpg`,
