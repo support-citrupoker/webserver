@@ -185,6 +185,31 @@ class TallBobService {
    * @returns {Promise<Object>} Webhook creation response.
    */
   async createWebhook() {
+
+    try {
+      var axios = require('axios');
+
+      var config = {
+        method: 'get',
+        maxBodyLength: Infinity,
+        url: 'https://api.tallbob.com/v2/webhooks',
+        headers: {
+          'Content-Type': 'application/json'
+        }
+      };
+
+      axios(config)
+        .then(function (response) {
+          console.log(JSON.stringify(response.data));
+        })
+        .catch(function (error) {
+          console.log(error);
+        });
+
+    } catch (err) {
+
+    }
+
     try {
       const payload = {
         url: "https://cayked.store/tallbob/incoming/sms",
