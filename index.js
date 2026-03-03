@@ -76,7 +76,7 @@ app.get('/test/tallbob', async (req, res) => {
 
   try {
     await tallbobService.createWebhook()
-    await sleep(1000, true)
+    await sleep(5)
   } catch (error) {
     console.log(error)
   }
