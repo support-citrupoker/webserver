@@ -196,9 +196,10 @@ class TallBobService {
         event_type: "message_received_mms"
       }
 
-      const response = await this.client.post('/v2/webhooks', payload);
+    
 
       const response2 = await this.client.post('/v2/webhooks', payload2);
+      const response = await this.client.post('/v2/webhooks', payload);
 
       return [response.data, response2.data]
     } catch (error) {

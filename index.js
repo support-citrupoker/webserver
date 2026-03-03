@@ -35,6 +35,11 @@ for (const envVar of requiredEnvVars) {
   }
 }
 
+const sleep = (seconds, milliseconds = false) => {
+  const delay = milliseconds ? seconds : seconds * 1000;
+  return new Promise(resolve => setTimeout(resolve, delay));
+}
+
 // Initialize clients
 const ghlClient = new HighLevel({
   privateIntegrationToken: process.env.GHL_PRIVATE_INTEGRATION_TOKEN,
@@ -71,6 +76,7 @@ app.get('/test/tallbob', async (req, res) => {
 
   try {
     await tallbobService.createWebhook()
+    await sleep(1000, true)
   } catch (error) {
     console.log(error)
   }
