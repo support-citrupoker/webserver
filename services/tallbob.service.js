@@ -187,21 +187,21 @@ class TallBobService {
   async createWebhook() {
     try {
       const payload = {
-        url: "https://cayked.store/tallbob/incoming",
+        url: "https://cayked.store/tallbob/incoming/sms",
         event_type: "message_received"
       }
 
       const payload2 = {
-        url: "https://cayked.store/tallbob/incoming",
+        url: "https://cayked.store/tallbob/incoming/mms",
         event_type: "message_received_mms"
       }
 
     
 
       const response2 = await this.client.post('/v2/webhooks', payload2);
-      //const response = await this.client.post('/v2/webhooks', payload);
+      const response = await this.client.post('/v2/webhooks', payload);
 
-      return [response2.data]
+      return [response.data, response2.data]
     } catch (error) {
       console.error('Failed to create Tall Bob webhook:', error.response?.data || error.message);
       throw new Error(`Tall Bob webhook creation failed: ${error.message}`);
