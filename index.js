@@ -128,7 +128,7 @@ app.get('/test/tallbob', async (req, res) => {
 })
 
 // Routes
-routes(app)
+routes(app, tallbobService, ghlService, messageController)
 
 // Webhooks
 app.use('/webhooks', webhookRoutes(tallbobService, ghlService, messageController));
