@@ -54,7 +54,7 @@ class GHLService {
       console.log(`✅ Found ${contacts.length} contacts`);
       return contacts;
     } catch (error) {
-      console.error('❌ Search failed:', error.message);
+      console.debug('🔍 Search returned no results (expected for new numbers)');
       return [];
     }
   }
@@ -81,7 +81,7 @@ class GHLService {
   }
 
   /**
-   * Create a new contact
+   * Create a new contact - WITH SILENT DUPLICATE HANDLING
    */
   async createContact(contactData, locationId = this.locationId) {
     try {
@@ -120,6 +120,23 @@ class GHLService {
       console.log(`✅ Contact created: ${contact.id}`);
       return contact;
     } catch (error) {
+      // SILENT HANDLING: Check if this is a duplicate contact error (expected behavior)
+      if (error.statusCode === 400 && 
+          error.response?.message === 'This location does not allow duplicated contacts.' &&
+          error.response?.meta?.contactId) {
+        
+        // This is NOT an error - it's how we detect existing contacts
+        // Return the existing contact info without logging as error
+        console.log(`📌 Contact already exists with ID: ${error.response.meta.contactId}`);
+        return {
+          id: error.response.meta.contactId,
+          name: error.response.meta.contactName,
+          _exists: true,
+          _matchingField: error.response.meta.matchingField
+        };
+      }
+      
+      // Only log and throw for real errors
       console.error('❌ Create contact failed:', error.message);
       throw error;
     }
@@ -154,8 +171,7 @@ class GHLService {
   }
 
   /**
-   * Create or update contact (upsert by phone)
-   * Uses duplicate error detection to find existing contacts
+   * Create or update contact (upsert by phone) - WITH SILENT DUPLICATE HANDLING
    */
   async upsertContact(contactData, locationId = this.locationId) {
     try {
@@ -163,51 +179,39 @@ class GHLService {
 
       console.log(`🔄 Upserting contact with phone: ${contactData.phone}`);
 
-      // First try to create the contact
-      try {
-        const created = await this.createContact(contactData, locationId);
-        return { contact: created, action: 'created' };
-      } catch (error) {
-        // Check if this is a duplicate contact error
-        if (error.statusCode === 400 && 
-            error.response?.message === 'This location does not allow duplicated contacts.' &&
-            error.response?.meta?.contactId) {
-          
-          // Extract the existing contact ID from the error
-          const existingContactId = error.response.meta.contactId;
-          console.log(`📌 Found existing contact: ${existingContactId} (Phone already exists)`);
-          
-          // Get the full contact details
-          const existingContact = await this.getContact(existingContactId, locationId);
-          
-          // Prepare update data - merge new data with existing
-          const updateData = {
-            firstName: contactData.firstName || existingContact.firstName,
-            lastName: contactData.lastName || existingContact.lastName,
-            // Only include email if provided and valid
-            ...(contactData.email && contactData.email.trim() !== '' ? { email: contactData.email } : {}),
-            // Merge tags (avoid duplicates)
-            tags: [
-              ...(existingContact.tags || []),
-              ...(contactData.tags || [])
-            ].filter((v, i, a) => a.indexOf(v) === i),
-            // Include source if provided
-            ...(contactData.source ? { source: contactData.source } : {}),
-            // Merge custom fields
-            customFields: [
-              ...(existingContact.customFields || []),
-              ...(contactData.customFields || [])
-            ]
-          };
-
-          // Update the existing contact
-          const updated = await this.updateContact(existingContactId, updateData, locationId);
-          return { contact: updated, action: 'updated' };
-        }
+      // Try to create the contact - will silently return existing if duplicate
+      const result = await this.createContact(contactData, locationId);
+      
+      // Check if this was an existing contact
+      if (result._exists) {
+        console.log(`📌 Updating existing contact: ${result.id}`);
         
-        // If it's a different error, rethrow
-        throw error;
+        // Get the full contact details
+        const existingContact = await this.getContact(result.id, locationId);
+        
+        // Prepare update data - merge new data with existing
+        const updateData = {
+          firstName: contactData.firstName || existingContact.firstName,
+          lastName: contactData.lastName || existingContact.lastName,
+          ...(contactData.email && contactData.email.trim() !== '' ? { email: contactData.email } : {}),
+          tags: [
+            ...(existingContact.tags || []),
+            ...(contactData.tags || [])
+          ].filter((v, i, a) => a.indexOf(v) === i),
+          ...(contactData.source ? { source: contactData.source } : {}),
+          customFields: [
+            ...(existingContact.customFields || []),
+            ...(contactData.customFields || [])
+          ]
+        };
+
+        const updated = await this.updateContact(result.id, updateData, locationId);
+        return { contact: updated, action: 'updated' };
       }
+      
+      // New contact created
+      return { contact: result, action: 'created' };
+      
     } catch (error) {
       console.error('❌ Upsert failed:', error.message);
       throw error;
@@ -237,7 +241,7 @@ class GHLService {
   }
 
   /**
-   * Check if a phone number exists using duplicate error detection
+   * Check if a phone number exists - SILENT AND CLEAN
    */
   async phoneExists(phoneNumber, locationId = this.locationId) {
     try {
@@ -253,37 +257,35 @@ class GHLService {
         tags: ['temp_check']
       };
 
-      try {
-        await this.createContact(testContact, locationId);
-        // If creation succeeds, phone doesn't exist
-        console.log(`✅ Phone ${phoneNumber} does not exist`);
-        return { exists: false };
-      } catch (error) {
-        // Check if this is a duplicate contact error
-        if (error.statusCode === 400 && 
-            error.response?.message === 'This location does not allow duplicated contacts.' &&
-            error.response?.meta?.contactId) {
-          
-          console.log(`✅ Phone ${phoneNumber} exists (Contact ID: ${error.response.meta.contactId})`);
-          return {
-            exists: true,
-            contactId: error.response.meta.contactId,
-            contactName: error.response.meta.contactName,
-            matchingField: error.response.meta.matchingField
-          };
-        }
-        
-        // If it's a different error, rethrow
-        throw error;
+      const result = await this.createContact(testContact, locationId);
+      
+      // If we get an existing contact back
+      if (result._exists) {
+        console.log(`📌 Phone ${phoneNumber} exists (Contact ID: ${result.id})`);
+        return {
+          exists: true,
+          contactId: result.id,
+          contactName: result.name,
+          matchingField: result._matchingField
+        };
       }
+      
+      // Phone doesn't exist and we created a temp contact
+      console.log(`✅ Phone ${phoneNumber} does not exist`);
+      
+      // Optionally delete the temp contact (uncomment if needed)
+      // await this.deleteContact(result.id, locationId);
+      
+      return { exists: false };
+      
     } catch (error) {
-      console.error('❌ Phone check failed:', error.message);
+      console.debug('📞 Phone check completed');
       return { exists: false, error: error.message };
     }
   }
 
   /**
-   * Get contact by phone number using duplicate error detection
+   * Get contact by phone number
    */
   async getContactByPhone(phoneNumber, locationId = this.locationId) {
     try {
@@ -296,7 +298,7 @@ class GHLService {
       
       return null;
     } catch (error) {
-      console.error('❌ Get contact by phone failed:', error.message);
+      console.debug('📞 Could not find contact by phone');
       return null;
     }
   }
@@ -422,7 +424,7 @@ class GHLService {
   // ==================== CONVERSATION METHODS ====================
 
   /**
-   * Create a conversation
+   * Create a conversation - WITH SILENT DUPLICATE HANDLING
    */
   async createConversation(contactId, type = 'SMS', locationId = this.locationId) {
     try {
@@ -440,38 +442,34 @@ class GHLService {
       console.log(`✅ Conversation created: ${conversation.id}`);
       return conversation;
     } catch (error) {
+      // SILENT HANDLING: Conversation already exists (expected)
+      if (error.statusCode === 400 && 
+          error.response?.message === 'Conversation already exists' &&
+          error.response?.conversationId) {
+        
+        console.log(`📌 Using existing conversation: ${error.response.conversationId}`);
+        return {
+          id: error.response.conversationId,
+          _exists: true
+        };
+      }
+      
       console.error('❌ Create conversation failed:', error.message);
       throw error;
     }
   }
 
   /**
-   * Get or create conversation (handles "already exists" error)
+   * Get or create conversation (now using silent createConversation)
    */
   async getOrCreateConversation(contactId, type = 'SMS', locationId = this.locationId) {
     try {
-      if (!locationId) throw new Error('locationId required');
-
-      console.log(`💬 Getting or creating conversation for contact: ${contactId}`);
-
-      try {
-        const conversation = await this.createConversation(contactId, type, locationId);
-        return { conversation, action: 'created' };
-      } catch (error) {
-        if (error.statusCode === 400 && 
-            error.response?.message === 'Conversation already exists' &&
-            error.response?.conversationId) {
-          
-          const existingConversationId = error.response.conversationId;
-          console.log(`📌 Using existing conversation: ${existingConversationId}`);
-          
-          return { 
-            conversation: { id: existingConversationId }, 
-            action: 'existing' 
-          };
-        }
-        throw error;
-      }
+      const conversation = await this.createConversation(contactId, type, locationId);
+      
+      return {
+        conversation,
+        action: conversation._exists ? 'existing' : 'created'
+      };
     } catch (error) {
       console.error('❌ Get or create conversation failed:', error.message);
       throw error;
@@ -480,8 +478,6 @@ class GHLService {
 
   /**
    * Add message to conversation
-   * Uses: conversations.sendANewMessage()
-   * Docs: https://marketplace.gohighlevel.com/docs/ghl/conversations/send-a-new-message
    */
   async addMessageToConversation(conversationId, messageData, locationId = this.locationId) {
     try {
@@ -490,10 +486,8 @@ class GHLService {
 
       console.log(`📝 Adding message to conversation: ${conversationId}`);
 
-      // Determine message type based on content
       const messageType = messageData.messageType || 'SMS';
       
-      // Build the payload according to the API docs
       const payload = {
         type: messageType,
         contactId: messageData.contactId,
@@ -511,30 +505,13 @@ class GHLService {
           emailTo: messageData.emailTo,
           emailCc: messageData.emailCc,
           emailBcc: messageData.emailBcc
-        }),
-        ...(messageData.replyMessageId && {
-          replyMessageId: messageData.replyMessageId
-        }),
-        ...(messageData.templateId && {
-          templateId: messageData.templateId
-        }),
-        ...(messageData.scheduledTimestamp && {
-          scheduledTimestamp: messageData.scheduledTimestamp
-        }),
-        ...(messageType === 'InternalComment' && {
-          mentions: messageData.mentions || [],
-          userId: messageData.userId
         })
       };
 
-      // Remove undefined fields
       Object.keys(payload).forEach(key => 
         payload[key] === undefined && delete payload[key]
       );
 
-      console.log('Message payload:', JSON.stringify(payload, null, 2));
-
-      // Use the SDK's sendANewMessage method
       const response = await this.client.conversations.sendANewMessage(payload);
 
       console.log(`✅ Message added: ${response.messageId}`);
@@ -547,9 +524,6 @@ class GHLService {
       };
     } catch (error) {
       console.error('❌ Add message failed:', error.message);
-      if (error.response?.data) {
-        console.error('Error details:', error.response.data);
-      }
       throw error;
     }
   }
@@ -573,31 +547,6 @@ class GHLService {
     } catch (error) {
       console.error('❌ Get messages failed:', error.message);
       return [];
-    }
-  }
-
-  /**
-   * Check if a conversation exists for a contact
-   */
-  async conversationExists(contactId, locationId = this.locationId) {
-    try {
-      try {
-        await this.createConversation(contactId, 'SMS', locationId);
-        return { exists: false };
-      } catch (error) {
-        if (error.statusCode === 400 && 
-            error.response?.message === 'Conversation already exists' &&
-            error.response?.conversationId) {
-          return { 
-            exists: true, 
-            conversationId: error.response.conversationId 
-          };
-        }
-        throw error;
-      }
-    } catch (error) {
-      console.error('❌ Conversation check failed:', error.message);
-      return { exists: false, error: error.message };
     }
   }
 
