@@ -7,28 +7,33 @@ export default (app, tallbobService, ghlService) => {
     res.json({ status: 'OK', timestamp: new Date().toISOString() });
   })
 
+  // ==================== INCOMING SMS FROM TALL BOB ====================
   app.post('/tallbob/incoming/sms', async (req, res) => {
     try {
       const messageData = req.body;
 
-      console.log(messageData)
+      console.log('📩 Received Tall Bob SMS webhook:', messageData);
       
-      // Log incoming message for debugging
-      console.log('Received Tall Bob webhook:', messageData);
-
-      // Process based on message type
-      if (messageData.eventType === 'message_received_sms' || messageData.eventType === 'message_received_mms') {
+      // Process based on event type - FIXED: eventType is just 'message_received'
+      if (messageData.eventType === 'message_received') {
       
+        // Extract message details - FIXED: Use correct field names from actual payload
         const {
-          from: sendVia,
-          to: recipient,
-          message: messageText,
-          media: mediaUrls,
-          receivedAt: timestamp
+          recipient,           // Customer's phone number (who received the message)
+          sentVia,             // Your Tall Bob number (who sent it)
+          messageText,         // The message content
+          timestamp,           // Unix timestamp
+          contactID,           // Tall Bob's contact ID (optional)
+          campaignID,          // Campaign ID (optional)
+          eventID,             // Unique event ID
+          reference            // Your reference (optional)
         } = messageData;
 
-        // Format phone number for GHL (add + prefix)
-        const formattedPhone = `+${messageData.sendVia.replace(/\D/g, '')}`;
+        // Format phone numbers for GHL (add + prefix)
+        // FIXED: Use recipient for customer, sentVia for your number
+        const customerPhone = `+${recipient.replace(/\D/g, '')}`;
+        const tallbobNumber = `+${sentVia.replace(/\D/g, '')}`;
+
         // Use stored locationId
         const locationId = ghlService.locationId;
 
@@ -37,49 +42,56 @@ export default (app, tallbobService, ghlService) => {
           return res.status(200).json({ received: true, error: 'Location not configured' });
         }
 
-        // Find or create contact in GHL
+        // Convert Unix timestamp to ISO string
+        const receivedDate = timestamp ? new Date(timestamp * 1000).toISOString() : new Date().toISOString();
+
+        // Find or create contact in GHL using the customer's number
+        // FIXED: Use customerPhone, not sendVia
         const { contact, action } = await ghlService.upsertContact({
-          phone: formattedPhone,
-          firstName: messageData.contactName?.split(' ')[0] || 'Unknown',
-          lastName: messageData.contactName?.split(' ')[1] || 'Contact',
-          tags: ['tallbob_contact', messageData.type === 'message_received_mms' ? 'mms_received' : 'sms_received'],
+          phone: customerPhone,
+          firstName: 'Unknown',  // Tall Bob doesn't send name
+          lastName: 'Contact',
+          tags: ['tallbob_contact', 'sms_received'],
           source: 'Tall Bob Integration',
           customFields: [
             { key: 'last_incoming_message', value: messageText },
-            { key: 'last_message_date', value: new Date().toISOString() }
+            { key: 'last_message_date', value: receivedDate },
+            { key: 'tallbob_contact_id', value: contactID || '' },
+            { key: 'tallbob_campaign_id', value: campaignID || '' }
           ]
         }, locationId);
 
-        // FIXED: Use getOrCreateConversation to handle "already exists" error
+        // Get or create conversation
         const { conversation } = await ghlService.getOrCreateConversation(
           contact.id, 
-          messageData.type === 'message_received_mms' ? 'MMS' : 'SMS', 
+          'SMS', 
           locationId
         );
 
-        // FIXED: Add message with required contactId field
+        // Add message to conversation - FIXED: Use correct field names
         await ghlService.addMessageToConversation(conversation.id, {
-          contactId: contact.id,  // REQUIRED for sendANewMessage
+          contactId: contact.id,
           body: messageText,
-          messageType: mediaUrls && mediaUrls.length > 0 ? 'MMS' : 'SMS',
-          mediaUrls: mediaUrls,
+          messageType: 'SMS',
+          mediaUrls: [], // No media in SMS
           direction: 'inbound',
-          date: receivedAt || new Date().toISOString(),
-          fromNumber: recipientNumber,  // Your Tall Bob number
-          toNumber: formattedPhone       // Customer's number
+          date: receivedDate,
+          fromNumber: tallbobNumber,  // Your Tall Bob number
+          toNumber: customerPhone,     // Customer's number
+          providerMessageId: eventID || reference
         }, locationId);
 
-        console.log(`Message processed for contact ${contact.id} (${action})`);
-        // Extract message details
+        console.log(`✅ Message processed for contact ${contact.id} (${action})`);
       }
-      // Acknowledge receipt to Tall Bob
+
+      // Always acknowledge receipt to Tall Bob
       res.status(200).json({ 
         received: true, 
         timestamp: new Date().toISOString() 
       });
       
     } catch (error) {
-      console.error('Error processing Tall Bob webhook:', error);
+      console.error('❌ Error processing Tall Bob SMS webhook:', error);
       // Still return 200 to prevent Tall Bob from retrying
       res.status(200).json({ 
         received: true, 
@@ -88,81 +100,83 @@ export default (app, tallbobService, ghlService) => {
     }
   })
 
+  // ==================== INCOMING MMS FROM TALL BOB ====================
   app.post('/tallbob/incoming/mms', async (req, res) => {
     try {
       const messageData = req.body;
 
-      console.log(messageData)
+      console.log('📩 Received Tall Bob MMS webhook:', messageData);
       
-      // Log incoming message for debugging
-      console.log('Received Tall Bob webhook:', messageData);
-
-      // Process based on message type
-      if (messageData.eventType === 'message_received_sms' || messageData.eventType === 'message_received_mms') {
+      // Process based on event type
+      if (messageData.eventType === 'message_received_mms') {
+      
         // Extract message details
         const {
-          from: sendVia,
-          to: recipient,
-          message: messageText,
-          media: mediaUrls,
-          receivedAt: timestamp
+          recipient,
+          sentVia,
+          messageText,
+          media,               // MMS might have media URLs
+          timestamp,
+          contactID,
+          campaignID,
+          eventID
         } = messageData;
 
-        // Format phone number for GHL (add + prefix)
-        const formattedPhone = `+${messageData.sendVia.replace(/\D/g, '')}`;
-
-        // Use stored locationId
+        const customerPhone = `+${recipient.replace(/\D/g, '')}`;
+        const tallbobNumber = `+${sentVia.replace(/\D/g, '')}`;
         const locationId = ghlService.locationId;
 
         if (!locationId) {
-          console.error('❌ No locationId configured. Set GHL_LOCATION_ID in .env');
-          return res.status(200).json({ received: true, error: 'Location not configured' });
+          console.error('❌ No locationId configured');
+          return res.status(200).json({ received: true });
         }
 
-        // Find or create contact in GHL
+        const receivedDate = timestamp ? new Date(timestamp * 1000).toISOString() : new Date().toISOString();
+
+        // Find or create contact
         const { contact, action } = await ghlService.upsertContact({
-          phone: formattedPhone,
-          firstName: messageData.contactName?.split(' ')[0] || 'Unknown',
-          lastName: messageData.contactName?.split(' ')[1] || 'Contact',
-          tags: ['tallbob_contact', messageData.type === 'message_received_mms' ? 'mms_received' : 'sms_received'],
+          phone: customerPhone,
+          firstName: 'Unknown',
+          lastName: 'Contact',
+          tags: ['tallbob_contact', 'mms_received'],
           source: 'Tall Bob Integration',
           customFields: [
             { key: 'last_incoming_message', value: messageText },
-            { key: 'last_message_date', value: new Date().toISOString() }
+            { key: 'last_message_date', value: receivedDate },
+            { key: 'tallbob_contact_id', value: contactID || '' }
           ]
         }, locationId);
 
-        // FIXED: Use getOrCreateConversation to handle "already exists" error
+        // Get or create conversation
         const { conversation } = await ghlService.getOrCreateConversation(
           contact.id, 
-          messageData.type === 'message_received_mms' ? 'MMS' : 'SMS', 
+          'MMS', 
           locationId
         );
 
-        // FIXED: Add message with required contactId field
+        // Add message to conversation with media if available
         await ghlService.addMessageToConversation(conversation.id, {
-          contactId: contact.id,  // REQUIRED for sendANewMessage
-          body: messageText,
-          messageType: mediaUrls && mediaUrls.length > 0 ? 'MMS' : 'SMS',
-          mediaUrls: mediaUrls,
+          contactId: contact.id,
+          body: messageText || 'MMS message',
+          messageType: 'MMS',
+          mediaUrls: media ? (Array.isArray(media) ? media : [media]) : [],
           direction: 'inbound',
-          date: receivedAt || new Date().toISOString(),
-          fromNumber: recipientNumber,  // Your Tall Bob number
-          toNumber: formattedPhone       // Customer's number
+          date: receivedDate,
+          fromNumber: tallbobNumber,
+          toNumber: customerPhone,
+          providerMessageId: eventID
         }, locationId);
 
-        console.log(`Message processed for contact ${contact.id} (${action})`);
+        console.log(`✅ MMS processed for contact ${contact.id} (${action})`);
       }
 
-      // Acknowledge receipt to Tall Bob
       res.status(200).json({ 
         received: true, 
         timestamp: new Date().toISOString() 
       });
       
     } catch (error) {
-      console.error('Error processing Tall Bob webhook:', error);
-      // Still return 200 to prevent Tall Bob from retrying
+      console.error('❌ Error processing Tall Bob MMS webhook:', error);
       res.status(200).json({ 
         received: true, 
         error: error.message 
@@ -170,6 +184,7 @@ export default (app, tallbobService, ghlService) => {
     }
   })
 
+  // ==================== SEND MESSAGE VIA TALL BOB ====================
   app.post('/tallbob/send-message', async (req, res) => {
     try {
       const {
@@ -213,24 +228,22 @@ export default (app, tallbobService, ghlService) => {
       // If we have GHL contact info, log the outgoing message
       if (targetLocationId && contactId) {
         try {
-          // FIXED: Use getOrCreateConversation to handle "already exists" error
           const { conversation } = await ghlService.getOrCreateConversation(
             contactId,
             mediaUrl ? 'MMS' : 'SMS',
             targetLocationId
           );
 
-          // FIXED: Add message with required contactId field
           await ghlService.addMessageToConversation(conversation.id, {
-            contactId: contactId,  // REQUIRED for sendANewMessage
+            contactId: contactId,
             body: message,
             messageType: mediaUrl ? 'MMS' : 'SMS',
             mediaUrls: mediaUrl ? [mediaUrl] : [],
             direction: 'outbound',
             date: new Date().toISOString(),
             providerMessageId: result.messageId,
-            fromNumber: from,  // Your sender number/ID
-            toNumber: to        // Customer's number
+            fromNumber: from,
+            toNumber: to
           }, targetLocationId);
         } catch (ghlError) {
           console.error('Failed to log message in GHL:', ghlError);
@@ -241,7 +254,8 @@ export default (app, tallbobService, ghlService) => {
       res.json({
         success: true,
         messageId: result.messageId,
-        provider: 'Tall Bob'
+        provider: 'Tall Bob',
+        timestamp: new Date().toISOString()
       });
 
     } catch (error) {
@@ -253,6 +267,9 @@ export default (app, tallbobService, ghlService) => {
     }
   })
 
-  app.get('*', (req, res) => { return res.sendFile(join(`${__basedir}/dist/index.html`)) })
+  // ==================== CATCH-ALL ROUTE ====================
+  app.get('*', (req, res) => { 
+    return res.sendFile(join(`${__basedir}/dist/index.html`)) 
+  })
 
 }
