@@ -1,6 +1,5 @@
 import { join } from 'path'
 
-
 export default (app, tallbobService, ghlService) => {
 
   // Health check
@@ -164,7 +163,76 @@ export default (app, tallbobService, ghlService) => {
     }
   })
 
-  app.get('*', (req, res) => { return res.sendFile(join(`${__basedir}/dist/index.html`)) })
+  app.post('/tallbob/send-message', async (req, res) => {
+    try {
+      const {
+        to,
+        from,
+        message,
+        mediaUrl,
+        locationId,
+        contactId
+      } = req.body;
 
+      // Validate required fields
+      if (!to || !from || !message) {
+        return res.status(400).json({ 
+          error: 'Missing required fields: to, from, and message are required' 
+        });
+      }
+
+      // Send via Tall Bob
+      let result;
+      if (mediaUrl) {
+        // Send as MMS if media is included [citation:1]
+        result = await tallbobService.sendMMS({
+          to,
+          from,
+          body: message,
+          mediaUrl,
+          reference: `ghl_${contactId || 'unknown'}_${Date.now()}`
+        });
+      } else {
+        // Send as SMS
+        result = await tallbobService.sendSMS({
+          to,
+          from,
+          body: message,
+          reference: `ghl_${contactId || 'unknown'}_${Date.now()}`
+        });
+      }
+
+      // If we have GHL contact info, log the outgoing message
+      if (locationId && contactId) {
+        try {
+          await ghlService.addMessageToConversation(contactId, {
+            body: message,
+            messageType: mediaUrl ? 'MMS' : 'SMS',
+            mediaUrls: mediaUrl ? [mediaUrl] : [],
+            direction: 'outbound',
+            providerMessageId: result.messageId
+          });
+        } catch (ghlError) {
+          console.error('Failed to log message in GHL:', ghlError);
+          // Don't fail the main request if GHL logging fails
+        }
+      }
+
+      res.json({
+        success: true,
+        messageId: result.messageId,
+        provider: 'Tall Bob'
+      });
+
+    } catch (error) {
+      console.error('Error sending message:', error);
+      res.status(500).json({ 
+        success: false, 
+        error: error.message 
+      });
+    }
+  })
+
+  app.get('*', (req, res) => { return res.sendFile(join(`${__basedir}/dist/index.html`)) })
 
 }
