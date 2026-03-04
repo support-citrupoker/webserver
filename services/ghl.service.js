@@ -43,11 +43,10 @@ class GHLService {
 
       const response = await this.client.contacts.searchContactsAdvanced({
         locationId: locationId,
-        query: cleanPhone,
         pageLimit: 10,
         filters: [{
           field: "phone",
-          operator: "contains",
+          operator: "eq",
           value: cleanPhone
         }]
       });
