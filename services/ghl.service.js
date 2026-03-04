@@ -64,7 +64,9 @@ class GHLService {
    */
   async searchContactsByPhone(phoneNumber, locationId = this.locationId) {
     try {
-      if (!locationId) throw new Error('locationId required');
+      if (!locationId) {
+        throw new Error('locationId is required');
+      }
 
       console.log(`🔍 Searching contact with phone: ${phoneNumber}`);
 
@@ -147,6 +149,7 @@ class GHLService {
       const contact = response.contact || response;
       return contact;
     } catch (error) {
+      // SILENT HANDLING: Duplicate contact error - this is how we detect existing contacts
       if (error.statusCode === 400 && 
           error.response?.message === 'This location does not allow duplicated contacts.' &&
           error.response?.meta?.contactId) {
@@ -300,6 +303,28 @@ class GHLService {
     }
   }
 
+  /**
+   * Delete a contact
+   */
+  async deleteContact(contactId, locationId = this.locationId) {
+    try {
+      if (!locationId) throw new Error('locationId required');
+
+      console.log(`🗑️ Deleting contact: ${contactId}`);
+
+      const response = await this.client.contacts.deleteContact(
+        { contactId },
+        { headers: { locationId } }
+      );
+
+      console.log(`✅ Contact deleted: ${contactId}`);
+      return response;
+    } catch (error) {
+      console.error('❌ Delete contact failed:', error.message);
+      throw error;
+    }
+  }
+
   // ==================== TAG METHODS ====================
 
   /**
@@ -416,6 +441,7 @@ class GHLService {
 
       return response.conversation || response;
     } catch (error) {
+      // SILENT HANDLING: Conversation already exists
       if (error.statusCode === 400 && 
           error.response?.message === 'Conversation already exists' &&
           error.response?.conversationId) {
@@ -445,55 +471,83 @@ class GHLService {
   }
 
   /**
-   * Add message to conversation
+   * Add message to conversation - FIXED to use addAnInboundMessage
    */
   async addMessageToConversation(conversationId, messageData, locationId = this.locationId) {
     try {
       if (!locationId) throw new Error('locationId required');
       if (!messageData.contactId) throw new Error('contactId is required');
 
+      console.log(`📝 Adding message to conversation: ${conversationId}`);
+
+      // Build payload matching the SDK example for addAnInboundMessage
       const payload = {
         type: messageData.messageType || 'SMS',
+        conversationId: conversationId,
         contactId: messageData.contactId,
         message: messageData.body,
         attachments: messageData.mediaUrls || [],
-        status: messageData.direction === 'outbound' ? 'delivered' : 'pending',
+        direction: messageData.direction || 'inbound',
+        date: messageData.date || new Date().toISOString(),
         ...(messageData.messageType === 'SMS' && {
           fromNumber: messageData.fromNumber,
           toNumber: messageData.toNumber
+        }),
+        ...(messageData.messageType === 'Email' && {
+          html: messageData.html,
+          subject: messageData.subject,
+          emailFrom: messageData.emailFrom,
+          emailTo: messageData.emailTo,
+          emailCc: messageData.emailCc,
+          emailBcc: messageData.emailBcc,
+          emailMessageId: messageData.emailMessageId
         })
       };
 
+      // Remove undefined fields
       Object.keys(payload).forEach(key => 
         payload[key] === undefined && delete payload[key]
       );
 
-      const response = await this.client.conversations.sendANewMessage(payload);
+      console.log('Message payload:', JSON.stringify(payload, null, 2));
 
+      // Use the correct SDK method: addAnInboundMessage
+      const response = await this.client.conversations.addAnInboundMessage(payload);
+
+      console.log(`✅ Message added: ${response.id || response.messageId}`);
       return {
-        id: response.messageId,
-        conversationId: response.conversationId
+        id: response.id || response.messageId,
+        conversationId: response.conversationId || conversationId
       };
     } catch (error) {
+      console.error('❌ Add message failed:', error.message);
+      if (error.response?.data) {
+        console.error('Error details:', error.response.data);
+      }
       throw error;
     }
   }
 
   /**
-   * Get conversation messages
+   * Get conversation messages - FIXED to match SDK example
    */
-  async getConversationMessages(conversationId, locationId = this.locationId, limit = 50) {
+  async getConversationMessages(conversationId, locationId = this.locationId, limit = 20) {
     try {
       if (!locationId) throw new Error('locationId required');
 
-      const response = await this.client.conversations.getMessages(
-        conversationId,
-        { limit },
-        { headers: { locationId } }
-      );
+      console.log(`📋 Fetching messages for conversation: ${conversationId}`);
 
+      // Match the exact SDK pattern from the example
+      const response = await this.client.conversations.getMessages({
+        conversationId: conversationId,
+        limit: limit,
+        type: 'TYPE_SMS,TYPE_CALL' // Optional: filter by message type
+      });
+
+      console.log(`✅ Retrieved messages`);
       return response.messages || [];
     } catch (error) {
+      console.error('❌ Get messages failed:', error.message);
       return [];
     }
   }
