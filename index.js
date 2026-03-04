@@ -148,6 +148,35 @@ app.get('/test/ghl/ping', async (req, res) => {
   }
 });
 
+// Debug GHL location methods
+app.get('/test/ghl/location-methods', async (req, res) => {
+  const debug = {
+    locationsExists: !!ghlClient.locations,
+    locationMethods: [],
+    clientProperties: []
+  };
+
+  if (ghlClient.locations) {
+    // Get all methods of the locations object
+    debug.locationMethods = Object.getOwnPropertyNames(ghlClient.locations)
+      .filter(prop => typeof ghlClient.locations[prop] === 'function');
+    
+    // Also check if locations is a function itself
+    if (typeof ghlClient.locations === 'function') {
+      debug.locationsIsFunction = true;
+    }
+  }
+
+  // Also show top-level client methods that might return locations
+  debug.clientProperties = Object.getOwnPropertyNames(ghlClient)
+    .filter(prop => typeof ghlClient[prop] === 'function');
+
+  res.json({
+    success: true,
+    debug
+  });
+});
+
 
 // Routes
 routes(app, tallbobService, ghlService, messageController)
