@@ -429,7 +429,7 @@ app.get('/test/ghl/comprehensive', async (req, res) => {
         try {
           const message = await ghlService.addMessageToConversation(conversationId, {
             contactId: contactId,
-            body: 'This is a test message from comprehensive test',
+            body: 'one more test to confirm if it works',
             messageType: 'SMS',
             direction: 'outbound',
             fromNumber: process.env.TALLBOB_NUMBER || '+1234567890',
