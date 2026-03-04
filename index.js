@@ -431,7 +431,7 @@ app.get('/test/ghl/comprehensive', async (req, res) => {
             contactId: contactId,
             body: 'one more test to confirm if it works',
             messageType: 'SMS',
-            direction: 'Inbound',
+            direction: 'outbound',
             fromNumber: process.env.TALLBOB_NUMBER || '+1234567890',
             toNumber: testPhone,
             date: new Date().toISOString()
