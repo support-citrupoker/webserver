@@ -17,19 +17,18 @@ export default (app, tallbobService, ghlService) => {
       console.log('Received Tall Bob webhook:', messageData);
 
       // Process based on message type
-      if (messageData.type === 'message_received_sms' || messageData.type === 'message_received_mms') {
-        // Extract message details
+      if (messageData.eventType === 'message_received_sms' || messageData.eventType === 'message_received_mms') {
+      
         const {
-          from: senderNumber,
-          to: recipientNumber,
+          from: sendVia,
+          to: recipient,
           message: messageText,
           media: mediaUrls,
-          receivedAt
+          receivedAt: timestamp
         } = messageData;
 
         // Format phone number for GHL (add + prefix)
-        const formattedPhone = `+${senderNumber.replace(/\D/g, '')}`;
-
+        const formattedPhone = `+${messageData.sendVia.replace(/\D/g, '')}`;
         // Use stored locationId
         const locationId = ghlService.locationId;
 
@@ -71,8 +70,10 @@ export default (app, tallbobService, ghlService) => {
         }, locationId);
 
         console.log(`Message processed for contact ${contact.id} (${action})`);
-      }
 
+        
+        // Extract message details
+      }
       // Acknowledge receipt to Tall Bob
       res.status(200).json({ 
         received: true, 
@@ -99,18 +100,18 @@ export default (app, tallbobService, ghlService) => {
       console.log('Received Tall Bob webhook:', messageData);
 
       // Process based on message type
-      if (messageData.type === 'message_received_sms' || messageData.type === 'message_received_mms') {
+      if (messageData.eventType === 'message_received_sms' || messageData.eventType === 'message_received_mms') {
         // Extract message details
         const {
-          from: senderNumber,
-          to: recipientNumber,
+          from: sendVia,
+          to: recipient,
           message: messageText,
           media: mediaUrls,
-          receivedAt
+          receivedAt: timestamp
         } = messageData;
 
         // Format phone number for GHL (add + prefix)
-        const formattedPhone = `+${senderNumber.replace(/\D/g, '')}`;
+        const formattedPhone = `+${messageData.sendVia.replace(/\D/g, '')}`;
 
         // Use stored locationId
         const locationId = ghlService.locationId;
