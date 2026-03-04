@@ -133,6 +133,40 @@ app.get('/test/tallbob', async (req, res) => {
 
 })
 
+// Debug GHL client structure
+app.get('/test/ghl/debug', async (req, res) => {
+  console.log('🔍 Debugging GHL client structure...');
+  
+  const debug = {
+    clientExists: !!ghlClient,
+    methods: [],
+    availableProperties: []
+  };
+
+  if (ghlClient) {
+    // List all top-level properties/methods
+    debug.availableProperties = Object.getOwnPropertyNames(ghlClient)
+      .filter(name => !name.startsWith('_'));
+    
+    // Try to find locations-related methods
+    const locationMethods = [];
+    for (const key of Object.keys(ghlClient)) {
+      if (typeof ghlClient[key] === 'object' && ghlClient[key] !== null) {
+        debug.methods.push({
+          section: key,
+          methods: Object.getOwnPropertyNames(ghlClient[key])
+            .filter(m => typeof ghlClient[key][m] === 'function')
+        });
+      }
+    }
+  }
+
+  res.json({
+    success: true,
+    debug
+  });
+});
+
 
 // GHL test endpoint
 app.get('/test/ghl', async (req, res) => {
