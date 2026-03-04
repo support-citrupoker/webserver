@@ -10,6 +10,7 @@ import path from 'path'
 import { fileURLToPath } from 'url'
 import { dirname } from 'path'
 import cors from 'cors'
+import { HighLevel } from '@gohighlevel/api-client';
 import TallBobService from './services/tallbob.service.js';
 import GHLService from './services/ghl.service.js';
 import webhookRoutes from './routes/webhooks.js';
@@ -39,8 +40,14 @@ const sleep = (seconds, milliseconds = false) => {
   return new Promise(resolve => setTimeout(resolve, delay));
 }
 
+// Initialize clients
+const ghlClient = new HighLevel({
+  privateIntegrationToken: process.env.GHL_PRIVATE_INTEGRATION_TOKEN,
+  apiVersion: process.env.GHL_API_VERSION || '2021-07-28'
+})
+
 const tallbobService = new TallBobService()
-const ghlService = new GHLService()
+const ghlService = new GHLService(ghlClient)
 
 // Initialize controller with services
 const messageController = new MessageController(tallbobService, ghlService);
@@ -126,66 +133,84 @@ app.get('/test/tallbob', async (req, res) => {
 
 })
 
-app.get('/test/ghl/create-contact', async (req, res) => {
+
+// Test the HighLevel SDK client
+app.get('/test/ghl-sdk', async (req, res) => {
+  console.log('🧪 Testing HighLevel SDK client...');
+  
   try {
-    console.log('🧪 Testing GHL contact creation...');
+    // Log what methods are available
+    console.log('SDK Client methods:', Object.keys(ghlClient));
     
-    // Get first location
-    const locations = await ghlService.getLocations();
-    if (!locations || locations.length === 0) {
-      return res.status(400).json({ error: 'No locations found' });
+    // Try to access locations through the SDK
+    if (ghlClient.locations) {
+      console.log('📍 Locations object exists');
+      console.log('Location methods:', Object.keys(ghlClient.locations));
+      
+      // Try to get locations
+      try {
+        const locations = await ghlClient.locations.list();
+        return res.json({
+          success: true,
+          method: 'locations.list()',
+          locations: locations
+        });
+      } catch (listError) {
+        console.log('list() failed:', listError.message);
+        
+        // Try alternative method
+        try {
+          const locations = await ghlClient.locations.search();
+          return res.json({
+            success: true,
+            method: 'locations.search()',
+            locations: locations
+          });
+        } catch (searchError) {
+          console.log('search() failed:', searchError.message);
+        }
+      }
     }
     
-    const locationId = locations[0].id;
-    console.log(`Using location: ${locationId}`);
-    
-    // Test contact data based on the API example
-    const contactData = {
-      firstName: "Rosan",
-      lastName: "Deo",
-      name: "Rosan Deo",
-      email: "rosan@deos.com",
-      phone: "+237652251848", // Your Cameroon number
-      address1: "3535 1st St N",
-      city: "Dolomite",
-      state: "AL",
-      postalCode: "35061",
-      country: "US",
-      website: "https://example.com",
-      timezone: "America/New_York",
-      gender: "male",
-      dateOfBirth: "1990-09-25",
-      companyName: "Test Company",
-      source: "API Test",
-      tags: ["test_contact", "tallbob_test", "api_created"],
-      dnd: false,
-      customFields: [
-        {
-          key: "test_field",
-          field_value: "Test value from API"
-        }
-      ]
-    };
-    
-    console.log('Attempting to create/update contact...');
-    const result = await ghlService.upsertContact(contactData, locationId);
+    // If we get here, try a contacts call instead
+    if (ghlClient.contacts) {
+      console.log('👤 Contacts object exists');
+      
+      // Try to search contacts (this might work without locations first)
+      try {
+        const contacts = await ghlClient.contacts.search({
+          locationId: 'test',
+          query: 'test',
+          limit: 1
+        });
+        return res.json({
+          success: true,
+          method: 'contacts.search()',
+          contacts: contacts
+        });
+      } catch (contactsError) {
+        console.log('Contacts search failed:', contactsError.message);
+      }
+    }
     
     res.json({
-      success: true,
-      message: `Contact ${result.action} successfully`,
-      action: result.action,
-      contact: result.contact
+      success: false,
+      message: 'Could not find working method',
+      clientMethods: Object.keys(ghlClient)
     });
     
   } catch (error) {
-    console.error('❌ Test failed:', error);
+    console.error('❌ SDK test failed:', error);
     res.status(500).json({
       success: false,
-      error: error.message,
-      details: error.response?.data || null
+      error: error.message
     });
   }
 })
+
+
+
+
 
 // Routes
 routes(app, tallbobService, ghlService, messageController)
