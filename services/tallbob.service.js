@@ -122,7 +122,8 @@ class TallBobService {
         from: from || this.tallbobPhoneNumber || this.tallbobSenderName,
         url: mediaUrl || 'https://picsum.photos/200/300.jpg', // Default test image
         ...(subject && { subject }),
-        reference: reference || `mms_${Date.now()}`
+        reference: reference || `mms_${Date.now()}`,
+        subject: subject || "Multimedia"
       };
 
       console.log(`📸 Sending MMS to ${payload.to}`);
