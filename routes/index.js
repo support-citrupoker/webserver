@@ -70,8 +70,6 @@ export default (app, tallbobService, ghlService) => {
         }, locationId);
 
         console.log(`Message processed for contact ${contact.id} (${action})`);
-
-        
         // Extract message details
       }
       // Acknowledge receipt to Tall Bob
