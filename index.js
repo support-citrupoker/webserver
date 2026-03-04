@@ -63,6 +63,12 @@ app.use(helmet({
   contentSecurityPolicy: true
 }))
 
+try {
+  await tallbobService.createWebhooks()
+  await sleep(5)
+} catch (error) {
+  console.log(error)
+}
 // Test endpoints
 app.post('/api/send-and-sync', (req, res) => messageController.sendAndSync(req, res));
 app.get('/api/status/:messageId', (req, res) => messageController.getStatus(req, res));
@@ -74,14 +80,6 @@ app.get('/test/tallbob', async (req, res) => {
   console.log('API Key length:', process.env.TALLBOB_API_KEY?.length);
   console.log('Base URL:', tallbobService.baseURL);
 
-  try {
-    await tallbobService.createWebhook()
-    await sleep(5)
-  } catch (error) {
-    console.log(error)
-  }
-  
-  
   try {
     const smsResult = await tallbobService.sendSMS({
       to: '61499000100',
