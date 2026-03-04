@@ -23,18 +23,13 @@ class GHLService {
    * Suppress SDK internal error logging for expected errors
    */
   _suppressSDKLogging() {
-    // Store original console.error
     const originalError = console.error;
-    
-    // Override console.error to filter out expected duplicate errors
     console.error = (...args) => {
       const errorMsg = args.join(' ');
-      // Filter out duplicate contact errors (these are expected)
       if (errorMsg.includes('duplicated contacts') || 
           errorMsg.includes('Conversation already exists')) {
-        return; // Silently ignore
+        return;
       }
-      // Pass through other errors
       originalError.apply(console, args);
     };
   }
@@ -50,7 +45,7 @@ class GHLService {
   // ==================== CONTACT METHODS ====================
 
   /**
-   * Search contacts by phone number
+   * Search contacts by phone number - IMPROVED with multiple search strategies
    */
   async searchContactsByPhone(phoneNumber, locationId = this.locationId) {
     try {
@@ -60,22 +55,47 @@ class GHLService {
 
       console.log(`🔍 Searching contact with phone: ${phoneNumber}`);
 
+      // Clean the phone number - remove all non-numeric characters
       const cleanPhone = phoneNumber.replace(/\D/g, '');
+      
+      // Strategy 1: Try advanced search with filters
+      try {
+        const response = await this.client.contacts.searchContactsAdvanced({
+          locationId: locationId,
+          pageLimit: 10,
+          filters: [{
+            field: "phone",
+            operator: "contains",
+            value: cleanPhone
+          }]
+        });
 
-      const response = await this.client.contacts.searchContactsAdvanced({
-        locationId: locationId,
-        query: cleanPhone,
-        pageLimit: 10,
-        filters: [{
-          field: "phone",
-          operator: "contains",
-          value: cleanPhone
-        }]
-      });
+        if (response.contacts && response.contacts.length > 0) {
+          console.log(`✅ Found ${response.contacts.length} contacts via search`);
+          return response.contacts;
+        }
+      } catch (e) {
+        // Fall through to next strategy
+      }
 
-      const contacts = response.contacts || [];
-      console.log(`✅ Found ${contacts.length} contacts`);
-      return contacts;
+      // Strategy 2: Try with query parameter
+      try {
+        const response = await this.client.contacts.searchContactsAdvanced({
+          locationId: locationId,
+          query: cleanPhone,
+          pageLimit: 10
+        });
+
+        if (response.contacts && response.contacts.length > 0) {
+          console.log(`✅ Found ${response.contacts.length} contacts via query`);
+          return response.contacts;
+        }
+      } catch (e) {
+        // Fall through to next strategy
+      }
+
+      console.log('🔍 No contacts found via search');
+      return [];
     } catch (error) {
       console.debug('🔍 Search returned no results');
       return [];
@@ -136,16 +156,14 @@ class GHLService {
       );
 
       const response = await this.client.contacts.createContact(payload);
-      
       const contact = response.contact || response;
       return contact;
     } catch (error) {
-      // SILENT HANDLING: Check if this is a duplicate contact error
+      // SILENT HANDLING: Duplicate contact error - this is how we detect existing contacts
       if (error.statusCode === 400 && 
           error.response?.message === 'This location does not allow duplicated contacts.' &&
           error.response?.meta?.contactId) {
         
-        // Return the existing contact info without logging
         return {
           id: error.response.meta.contactId,
           name: error.response.meta.contactName,
@@ -153,14 +171,12 @@ class GHLService {
           _matchingField: error.response.meta.matchingField
         };
       }
-      
-      // Only throw for real errors
       throw error;
     }
   }
 
   /**
-   * Update an existing contact - FIXED: Clean data properly
+   * Update an existing contact - FIXED to match the SDK example
    */
   async updateContact(contactId, contactData, locationId = this.locationId) {
     try {
@@ -168,31 +184,40 @@ class GHLService {
 
       console.log(`✏️ Updating contact: ${contactId}`);
 
-      // Create a clean copy of the data WITHOUT any headers or locationId
-      const cleanData = {};
-      
-      // Only copy valid contact fields
-      if (contactData.firstName) cleanData.firstName = contactData.firstName;
-      if (contactData.lastName) cleanData.lastName = contactData.lastName;
-      if (contactData.name) cleanData.name = contactData.name;
-      if (contactData.email && contactData.email.trim() !== '') cleanData.email = contactData.email;
-      if (contactData.phone) cleanData.phone = contactData.phone;
-      if (contactData.address1) cleanData.address1 = contactData.address1;
-      if (contactData.city) cleanData.city = contactData.city;
-      if (contactData.state) cleanData.state = contactData.state;
-      if (contactData.postalCode) cleanData.postalCode = contactData.postalCode;
-      if (contactData.country) cleanData.country = contactData.country;
-      if (contactData.website) cleanData.website = contactData.website;
-      if (contactData.timezone) cleanData.timezone = contactData.timezone;
-      if (contactData.tags) cleanData.tags = contactData.tags;
-      if (contactData.source) cleanData.source = contactData.source;
-      if (contactData.customFields) cleanData.customFields = contactData.customFields;
+      // Build the update payload exactly like the SDK example
+      const payload = {
+        contactId: contactId,
+        firstName: contactData.firstName,
+        lastName: contactData.lastName,
+        name: contactData.name,
+        email: contactData.email,
+        phone: contactData.phone,
+        address1: contactData.address1,
+        city: contactData.city,
+        state: contactData.state,
+        postalCode: contactData.postalCode,
+        country: contactData.country,
+        website: contactData.website,
+        timezone: contactData.timezone,
+        tags: contactData.tags,
+        source: contactData.source,
+        customFields: contactData.customFields
+      };
 
-      console.log('Update data:', JSON.stringify(cleanData, null, 2));
+      // Remove undefined fields
+      Object.keys(payload).forEach(key => {
+        if (payload[key] === undefined) delete payload[key];
+      });
 
+      // Remove contactId from payload since it's passed separately
+      delete payload.contactId;
+
+      console.log('Update payload:', JSON.stringify(payload, null, 2));
+
+      // The SDK handles headers internally - we just pass the data
       const response = await this.client.contacts.updateContact(
-        { contactId, ...cleanData },  // Body only - no headers
-        { headers: { locationId } }    // Headers separately
+        { contactId, ...payload },
+        { headers: { locationId } }
       );
 
       console.log(`✅ Contact updated: ${contactId}`);
@@ -204,18 +229,20 @@ class GHLService {
   }
 
   /**
-   * Create or update contact (upsert by phone) - WITH SILENT HANDLING
+   * Create or update contact (upsert by phone) - USING DUPLICATE ERRORS
    */
   async upsertContact(contactData, locationId = this.locationId) {
     try {
       if (!locationId) throw new Error('locationId required');
 
-      // Try to create the contact - will silently return existing if duplicate
+      console.log(`🔄 Upserting contact with phone: ${contactData.phone}`);
+
+      // Try to create the contact - will return existing contact info if duplicate
       const result = await this.createContact(contactData, locationId);
       
       // Check if this was an existing contact
       if (result._exists) {
-        console.log(`📌 Updating existing contact: ${result.id}`);
+        console.log(`📌 Found existing contact via duplicate error: ${result.id}`);
         
         // Get the full contact details
         const existingContact = await this.getContact(result.id, locationId);
@@ -224,12 +251,12 @@ class GHLService {
         const updateData = {
           firstName: contactData.firstName || existingContact.firstName,
           lastName: contactData.lastName || existingContact.lastName,
-          ...(contactData.email && contactData.email.trim() !== '' ? { email: contactData.email } : {}),
+          email: contactData.email || existingContact.email,
           tags: [
             ...(existingContact.tags || []),
             ...(contactData.tags || [])
           ].filter((v, i, a) => a.indexOf(v) === i),
-          ...(contactData.source ? { source: contactData.source } : {}),
+          source: contactData.source || existingContact.source,
           customFields: [
             ...(existingContact.customFields || []),
             ...(contactData.customFields || [])
@@ -250,13 +277,13 @@ class GHLService {
   }
 
   /**
-   * Check if a phone number exists - SILENT AND CLEAN
+   * Check if a phone number exists - USING DUPLICATE ERROR (MOST RELIABLE)
    */
   async phoneExists(phoneNumber, locationId = this.locationId) {
     try {
       if (!locationId) throw new Error('locationId required');
 
-      // Try to create a minimal contact with just the phone number
+      // Try to create a minimal contact - will trigger duplicate error if exists
       const testContact = {
         phone: phoneNumber,
         firstName: 'Temp',
@@ -266,18 +293,17 @@ class GHLService {
 
       const result = await this.createContact(testContact, locationId);
       
-      // If we get an existing contact back
       if (result._exists) {
         return {
           exists: true,
           contactId: result.id,
           contactName: result.name,
-          matchingField: result._matchingField
+          matchingField: result._matchingField,
+          method: 'duplicate_detection'
         };
       }
       
-      // Phone doesn't exist and we created a temp contact
-      return { exists: false };
+      return { exists: false, method: 'duplicate_detection' };
       
     } catch (error) {
       return { exists: false, error: error.message };
@@ -285,7 +311,7 @@ class GHLService {
   }
 
   /**
-   * Get contact by phone number
+   * Get contact by phone number - USING DUPLICATE ERROR (MOST RELIABLE)
    */
   async getContactByPhone(phoneNumber, locationId = this.locationId) {
     try {
@@ -438,10 +464,8 @@ class GHLService {
         type
       });
 
-      const conversation = response.conversation || response;
-      return conversation;
+      return response.conversation || response;
     } catch (error) {
-      // SILENT HANDLING: Conversation already exists
       if (error.statusCode === 400 && 
           error.response?.message === 'Conversation already exists' &&
           error.response?.conversationId) {
@@ -451,7 +475,6 @@ class GHLService {
           _exists: true
         };
       }
-      
       throw error;
     }
   }
@@ -462,7 +485,6 @@ class GHLService {
   async getOrCreateConversation(contactId, type = 'SMS', locationId = this.locationId) {
     try {
       const conversation = await this.createConversation(contactId, type, locationId);
-      
       return {
         conversation,
         action: conversation._exists ? 'existing' : 'created'
@@ -480,21 +502,18 @@ class GHLService {
       if (!locationId) throw new Error('locationId required');
       if (!messageData.contactId) throw new Error('contactId is required');
 
-      const messageType = messageData.messageType || 'SMS';
-      
       const payload = {
-        type: messageType,
+        type: messageData.messageType || 'SMS',
         contactId: messageData.contactId,
         message: messageData.body,
         attachments: messageData.mediaUrls || [],
         status: messageData.direction === 'outbound' ? 'delivered' : 'pending',
-        ...(messageType === 'SMS' && {
+        ...(messageData.messageType === 'SMS' && {
           fromNumber: messageData.fromNumber,
           toNumber: messageData.toNumber
         })
       };
 
-      // Remove undefined fields
       Object.keys(payload).forEach(key => 
         payload[key] === undefined && delete payload[key]
       );
@@ -503,10 +522,7 @@ class GHLService {
 
       return {
         id: response.messageId,
-        conversationId: response.conversationId,
-        emailMessageId: response.emailMessageId,
-        messageIds: response.messageIds,
-        msg: response.msg
+        conversationId: response.conversationId
       };
     } catch (error) {
       throw error;
@@ -538,13 +554,12 @@ class GHLService {
   async conversationExists(contactId, locationId = this.locationId) {
     try {
       const result = await this.createConversation(contactId, 'SMS', locationId);
-      
       return {
         exists: !!result._exists,
         conversationId: result._exists ? result.id : null
       };
     } catch (error) {
-      return { exists: false, error: error.message };
+      return { exists: false };
     }
   }
 
@@ -585,10 +600,7 @@ class GHLService {
   async testConnection(locationId = this.locationId) {
     try {
       if (!locationId) {
-        return {
-          success: false,
-          error: 'No locationId provided'
-        };
+        return { success: false, error: 'No locationId provided' };
       }
 
       const response = await this.client.contacts.searchContactsAdvanced({
@@ -602,10 +614,7 @@ class GHLService {
         hasContacts: (response.contacts?.length || 0) > 0
       };
     } catch (error) {
-      return {
-        success: false,
-        error: error.message
-      };
+      return { success: false, error: error.message };
     }
   }
 }
