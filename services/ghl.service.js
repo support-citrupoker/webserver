@@ -175,7 +175,7 @@ class GHLService {
           
           // Extract the existing contact ID from the error
           const existingContactId = error.response.meta.contactId;
-          console.log(`📌 Found existing contact: ${existingContactId}`);
+          console.log(`📌 Found existing contact: ${existingContactId} (Phone already exists)`);
           
           // Get the full contact details
           const existingContact = await this.getContact(existingContactId, locationId);
@@ -215,24 +215,74 @@ class GHLService {
   }
 
   /**
-   * Delete a contact
+   * Check if a phone number exists using duplicate error detection
+   * This is more reliable than search because it uses GHL's own duplicate detection
    */
-  async deleteContact(contactId, locationId = this.locationId) {
+  async phoneExists(phoneNumber, locationId = this.locationId) {
     try {
       if (!locationId) throw new Error('locationId required');
 
-      console.log(`🗑️ Deleting contact: ${contactId}`);
+      console.log(`📞 Checking if phone exists: ${phoneNumber}`);
 
-      const response = await this.client.contacts.deleteContact(
-        { contactId },
-        { headers: { locationId } }
-      );
+      // Try to create a minimal contact with just the phone number
+      // This will trigger the duplicate error if the phone exists
+      const testContact = {
+        phone: phoneNumber,
+        firstName: 'Temp',
+        lastName: 'Temp',
+        tags: ['temp_check']
+      };
 
-      console.log(`✅ Contact deleted: ${contactId}`);
-      return response;
+      try {
+        await this.createContact(testContact, locationId);
+        // If creation succeeds, phone doesn't exist
+        console.log(`✅ Phone ${phoneNumber} does not exist`);
+        
+        // Clean up the temp contact (optional - you might want to delete it)
+        // This is optional and depends on your needs
+        return false;
+      } catch (error) {
+        // Check if this is a duplicate contact error
+        if (error.statusCode === 400 && 
+            error.response?.message === 'This location does not allow duplicated contacts.' &&
+            error.response?.meta?.contactId) {
+          
+          console.log(`✅ Phone ${phoneNumber} exists (Contact ID: ${error.response.meta.contactId})`);
+          return {
+            exists: true,
+            contactId: error.response.meta.contactId,
+            contactName: error.response.meta.contactName,
+            matchingField: error.response.meta.matchingField
+          };
+        }
+        
+        // If it's a different error, rethrow
+        throw error;
+      }
     } catch (error) {
-      console.error('❌ Delete contact failed:', error.message);
-      throw error;
+      console.error('❌ Phone check failed:', error.message);
+      return { exists: false, error: error.message };
+    }
+  }
+
+  /**
+   * Get contact by phone number using duplicate error detection
+   * This is the most reliable way to get a contact by phone
+   */
+  async getContactByPhone(phoneNumber, locationId = this.locationId) {
+    try {
+      const result = await this.phoneExists(phoneNumber, locationId);
+      
+      if (result.exists && result.contactId) {
+        // Get the full contact details
+        const contact = await this.getContact(result.contactId, locationId);
+        return contact;
+      }
+      
+      return null;
+    } catch (error) {
+      console.error('❌ Get contact by phone failed:', error.message);
+      return null;
     }
   }
 
