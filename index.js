@@ -133,251 +133,495 @@ app.get('/test/tallbob', async (req, res) => {
 
 })
 
-// Test route for adding conversation to existing contact by phone
-app.get('/test/add-conversation-to-existing', async (req, res) => {
-  try {
-    const { phone, message } = req.body;
-    
-    const testPhone = phone || '+237652251848';
-    const testMessage = message || 'This is a test message from the integration';
-    
-    console.log('\n🧪 ========== TEST: ADD CONVERSATION TO EXISTING CONTACT ==========');
-    console.log(`📞 Testing with phone: ${testPhone}`);
+// Comprehensive GHL Service Test Route
+app.get('/test/ghl/comprehensive', async (req, res) => {
+  console.log('\n🧪 ========== COMPREHENSIVE GHL SERVICE TEST ==========');
+  
+  const startTime = Date.now();
+  const results = {
+    timestamp: new Date().toISOString(),
+    locationId: ghlService.locationId,
+    tests: {},
+    summary: {
+      total: 0,
+      passed: 0,
+      failed: 0
+    }
+  };
 
-    // Step 1: Check if phone exists using the duplicate error method
-    console.log('\n📋 STEP 1: Checking if phone exists...');
-    const phoneCheck = await ghlService.phoneExists(testPhone);
-    
-    if (!phoneCheck.exists) {
-      return res.json({
+  try {
+    // ==================== TEST 1: LOCATION ====================
+    console.log('\n📋 TEST 1: Get Location');
+    try {
+      const location = await ghlService.getLocation();
+      results.tests.getLocation = {
+        name: 'Get Location',
+        success: true,
+        data: {
+          id: location.id,
+          name: location.name,
+          phone: location.phone
+        }
+      };
+      results.summary.passed++;
+      console.log('✅ Get Location successful');
+    } catch (error) {
+      results.tests.getLocation = {
+        name: 'Get Location',
         success: false,
-        message: 'Phone number does not exist. Please create a contact first.',
-        phoneCheck
+        error: error.message
+      };
+      results.summary.failed++;
+      console.log('❌ Get Location failed:', error.message);
+    }
+    results.summary.total++;
+
+    // ==================== TEST 2: CONTACT OPERATIONS ====================
+    const testPhone = '+237652251848';
+    const uniqueId = Date.now();
+    const testEmail = `test.${uniqueId}@example.com`;
+    
+    console.log('\n📋 TEST 2: Check if phone exists');
+    try {
+      const phoneCheck = await ghlService.phoneExists(testPhone);
+      results.tests.phoneExists = {
+        name: 'Phone Exists Check',
+        success: true,
+        data: phoneCheck
+      };
+      results.summary.passed++;
+      console.log(`✅ Phone exists check: ${phoneCheck.exists ? 'Exists' : 'New'}`);
+    } catch (error) {
+      results.tests.phoneExists = {
+        name: 'Phone Exists Check',
+        success: false,
+        error: error.message
+      };
+      results.summary.failed++;
+      console.log('❌ Phone exists check failed:', error.message);
+    }
+    results.summary.total++;
+
+    console.log('\n📋 TEST 3: Upsert Contact (Create or Update)');
+    let contactId = null;
+    try {
+      const { contact, action } = await ghlService.upsertContact({
+        firstName: 'Test',
+        lastName: `User_${uniqueId}`,
+        phone: testPhone,
+        email: testEmail,
+        tags: ['test_contact', 'comprehensive_test'],
+        source: 'Comprehensive Test',
+        address1: '123 Test Street',
+        city: 'Test City',
+        state: 'TS',
+        postalCode: '12345',
+        country: 'US',
+        customFields: [
+          { key: 'test_field', value: `Test value ${uniqueId}` }
+        ]
       });
-    }
-
-    console.log(`✅ Phone exists! Contact ID: ${phoneCheck.contactId}`);
-    
-    // Step 2: Get the full contact details
-    console.log('\n📋 STEP 2: Fetching full contact details...');
-    const contact = await ghlService.getContact(phoneCheck.contactId);
-    console.log(`✅ Contact fetched: ${contact.firstName} ${contact.lastName} (${contact.id})`);
-
-    // Step 3: Create a new conversation for this contact
-    console.log('\n📋 STEP 3: Creating new conversation...');
-    const conversation = await ghlService.createConversation(
-      contact.id,
-      'SMS',
-      ghlService.locationId
-    );
-    console.log(`✅ Conversation created: ${conversation.id}`);
-
-    // Step 4: Add a message to the conversation
-    console.log('\n📋 STEP 4: Adding message to conversation...');
-    const messageData = {
-      body: testMessage,
-      messageType: 'SMS',
-      direction: 'inbound',
-      date: new Date().toISOString()
-    };
-    
-    const addedMessage = await ghlService.addMessageToConversation(
-      conversation.id,
-      messageData,
-      ghlService.locationId
-    );
-    console.log(`✅ Message added: ${addedMessage.id}`);
-
-    // Step 5: Add a tag to track this test
-    console.log('\n📋 STEP 5: Adding test tag...');
-    await ghlService.addTagToContact(
-      contact.id,
-      'conversation_test',
-      ghlService.locationId
-    );
-    console.log(`✅ Tag added`);
-
-    // Step 6: Add a note about this test
-    console.log('\n📋 STEP 6: Adding test note...');
-    await ghlService.addNote(
-      contact.id,
-      `Test conversation added via API at ${new Date().toISOString()}`,
-      ghlService.locationId
-    );
-    console.log(`✅ Note added`);
-
-    console.log('\n✅ ========== TEST COMPLETED SUCCESSFULLY ==========');
-
-    res.json({
-      success: true,
-      message: 'Successfully added conversation to existing contact',
-      data: {
-        phoneCheck,
-        contact: {
-          id: contact.id,
-          name: `${contact.firstName || ''} ${contact.lastName || ''}`.trim(),
-          phone: contact.phone,
-          email: contact.email
-        },
-        conversation: {
-          id: conversation.id,
-          type: conversation.type
-        },
-        message: {
-          id: addedMessage.id,
-          body: addedMessage.body,
-          direction: addedMessage.direction
-        }
-      }
-    });
-
-  } catch (error) {
-    console.error('❌ Test failed:', error);
-    res.status(500).json({
-      success: false,
-      error: error.message,
-      details: error.response?.data
-    });
-  }
-});
-
-// Alternative: Test route that creates a contact if it doesn't exist
-app.get('/test/ensure-contact-and-conversation', async (req, res) => {
-  try {
-    const { phone, firstName, lastName, message } = req.body;
-    
-    const testPhone = phone || '+237652251848';
-    const testFirstName = firstName || 'Test';
-    const testLastName = lastName || `User_${Date.now()}`;
-    const testMessage = message || 'Welcome message from integration';
-    
-    console.log('\n🧪 ========== TEST: ENSURE CONTACT AND ADD CONVERSATION ==========');
-    console.log(`📞 Testing with phone: ${testPhone}`);
-
-    // Step 1: Try to upsert the contact (will create or update)
-    console.log('\n📋 STEP 1: Upserting contact...');
-    const { contact, action } = await ghlService.upsertContact({
-      firstName: testFirstName,
-      lastName: testLastName,
-      phone: testPhone,
-      email: `test.${Date.now()}@example.com`,
-      tags: ['auto_created', 'test_contact'],
-      source: 'Test Route'
-    });
-    
-    console.log(`✅ Contact ${action}: ${contact.id}`);
-
-    // Step 2: Create a new conversation
-    console.log('\n📋 STEP 2: Creating new conversation...');
-    const conversation = await ghlService.createConversation(
-      contact.id,
-      'SMS',
-      ghlService.locationId
-    );
-    console.log(`✅ Conversation created: ${conversation.id}`);
-
-    // Step 3: Add a welcome message
-    console.log('\n📋 STEP 3: Adding message to conversation...');
-    const messageData = {
-      body: testMessage,
-      messageType: 'SMS',
-      direction: 'outbound',
-      date: new Date().toISOString()
-    };
-    
-    const addedMessage = await ghlService.addMessageToConversation(
-      conversation.id,
-      messageData,
-      ghlService.locationId
-    );
-    console.log(`✅ Message added: ${addedMessage.id}`);
-
-    // Step 4: If contact was newly created, add a special note
-    if (action === 'created') {
-      console.log('\n📋 STEP 4: Adding welcome note for new contact...');
-      await ghlService.addNote(
-        contact.id,
-        `New contact created via API at ${new Date().toISOString()}`,
-        ghlService.locationId
-      );
-      console.log(`✅ Welcome note added`);
-    }
-
-    console.log('\n✅ ========== TEST COMPLETED SUCCESSFULLY ==========');
-
-    res.json({
-      success: true,
-      message: `Contact ${action} and conversation created`,
-      data: {
-        action,
-        contact: {
-          id: contact.id,
-          name: `${contact.firstName || ''} ${contact.lastName || ''}`.trim(),
-          phone: contact.phone,
-          email: contact.email
-        },
-        conversation: {
-          id: conversation.id,
-          type: conversation.type
-        },
-        message: {
-          id: addedMessage.id,
-          body: addedMessage.body
-        }
-      }
-    });
-
-  } catch (error) {
-    console.error('❌ Test failed:', error);
-    res.status(500).json({
-      success: false,
-      error: error.message,
-      details: error.response?.data
-    });
-  }
-});
-
-// Test route to just check if a phone exists
-app.get('/test/check-phone/:phone', async (req, res) => {
-  try {
-    const { phone } = req.params;
-    
-    console.log(`\n📞 Checking phone: ${phone}`);
-    
-    const result = await ghlService.phoneExists(phone);
-    
-    if (result.exists) {
-      // Get the full contact details
-      const contact = await ghlService.getContact(result.contactId);
       
-      res.json({
+      contactId = contact.id;
+      results.tests.upsertContact = {
+        name: 'Upsert Contact',
         success: true,
-        exists: true,
-        message: `Phone number exists`,
-        phoneCheck: result,
-        contact: {
-          id: contact.id,
-          name: `${contact.firstName || ''} ${contact.lastName || ''}`.trim(),
+        data: {
+          action,
+          contactId: contact.id,
+          name: `${contact.firstName} ${contact.lastName}`,
           phone: contact.phone,
-          email: contact.email,
-          tags: contact.tags
+          email: contact.email
         }
-      });
-    } else {
-      res.json({
-        success: true,
-        exists: false,
-        message: `Phone number does not exist`,
-        phoneCheck: result
-      });
+      };
+      results.summary.passed++;
+      console.log(`✅ Contact ${action}: ${contact.id}`);
+    } catch (error) {
+      results.tests.upsertContact = {
+        name: 'Upsert Contact',
+        success: false,
+        error: error.message
+      };
+      results.summary.failed++;
+      console.log('❌ Upsert Contact failed:', error.message);
     }
+    results.summary.total++;
+
+    if (contactId) {
+      // ==================== TEST 4: GET CONTACT ====================
+      console.log('\n📋 TEST 4: Get Contact by ID');
+      try {
+        const contact = await ghlService.getContact(contactId);
+        results.tests.getContact = {
+          name: 'Get Contact',
+          success: true,
+          data: {
+            id: contact.id,
+            name: `${contact.firstName} ${contact.lastName}`,
+            phone: contact.phone,
+            email: contact.email,
+            tags: contact.tags
+          }
+        };
+        results.summary.passed++;
+        console.log('✅ Get Contact successful');
+      } catch (error) {
+        results.tests.getContact = {
+          name: 'Get Contact',
+          success: false,
+          error: error.message
+        };
+        results.summary.failed++;
+        console.log('❌ Get Contact failed:', error.message);
+      }
+      results.summary.total++;
+
+      // ==================== TEST 5: UPDATE CONTACT ====================
+      console.log('\n📋 TEST 5: Update Contact');
+      try {
+        const updated = await ghlService.updateContact(contactId, {
+          firstName: 'Updated',
+          lastName: `Name_${uniqueId}`,
+          tags: ['updated_tag']
+        });
+        results.tests.updateContact = {
+          name: 'Update Contact',
+          success: true,
+          data: {
+            id: updated.id,
+            name: `${updated.firstName} ${updated.lastName}`,
+            tags: updated.tags
+          }
+        };
+        results.summary.passed++;
+        console.log('✅ Update Contact successful');
+      } catch (error) {
+        results.tests.updateContact = {
+          name: 'Update Contact',
+          success: false,
+          error: error.message
+        };
+        results.summary.failed++;
+        console.log('❌ Update Contact failed:', error.message);
+      }
+      results.summary.total++;
+
+      // ==================== TEST 6: ADD TAG ====================
+      console.log('\n📋 TEST 6: Add Tag');
+      try {
+        await ghlService.addTagToContact(contactId, 'test_tag_1');
+        await ghlService.addTagToContact(contactId, 'test_tag_2');
+        results.tests.addTag = {
+          name: 'Add Tag',
+          success: true,
+          data: { tags: ['test_tag_1', 'test_tag_2'] }
+        };
+        results.summary.passed++;
+        console.log('✅ Tags added');
+      } catch (error) {
+        results.tests.addTag = {
+          name: 'Add Tag',
+          success: false,
+          error: error.message
+        };
+        results.summary.failed++;
+        console.log('❌ Add Tag failed:', error.message);
+      }
+      results.summary.total++;
+
+      // ==================== TEST 7: ADD NOTE ====================
+      console.log('\n📋 TEST 7: Add Note');
+      try {
+        await ghlService.addNote(contactId, 'This is a test note from comprehensive test');
+        results.tests.addNote = {
+          name: 'Add Note',
+          success: true
+        };
+        results.summary.passed++;
+        console.log('✅ Note added');
+      } catch (error) {
+        results.tests.addNote = {
+          name: 'Add Note',
+          success: false,
+          error: error.message
+        };
+        results.summary.failed++;
+        console.log('❌ Add Note failed:', error.message);
+      }
+      results.summary.total++;
+
+      // ==================== TEST 8: GET NOTES ====================
+      console.log('\n📋 TEST 8: Get Notes');
+      try {
+        const notes = await ghlService.getNotes(contactId);
+        results.tests.getNotes = {
+          name: 'Get Notes',
+          success: true,
+          data: { count: notes.length, notes }
+        };
+        results.summary.passed++;
+        console.log(`✅ Retrieved ${notes.length} notes`);
+      } catch (error) {
+        results.tests.getNotes = {
+          name: 'Get Notes',
+          success: false,
+          error: error.message
+        };
+        results.summary.failed++;
+        console.log('❌ Get Notes failed:', error.message);
+      }
+      results.summary.total++;
+
+      // ==================== TEST 9: UPDATE CUSTOM FIELD ====================
+      console.log('\n📋 TEST 9: Update Custom Field');
+      try {
+        await ghlService.updateCustomField(contactId, 'test_field', `Updated ${uniqueId}`);
+        results.tests.updateCustomField = {
+          name: 'Update Custom Field',
+          success: true
+        };
+        results.summary.passed++;
+        console.log('✅ Custom field updated');
+      } catch (error) {
+        results.tests.updateCustomField = {
+          name: 'Update Custom Field',
+          success: false,
+          error: error.message
+        };
+        results.summary.failed++;
+        console.log('❌ Update Custom Field failed:', error.message);
+      }
+      results.summary.total++;
+
+      // ==================== TEST 10: CONVERSATION ====================
+      console.log('\n📋 TEST 10: Get or Create Conversation');
+      let conversationId = null;
+      try {
+        const { conversation, action } = await ghlService.getOrCreateConversation(
+          contactId,
+          'SMS'
+        );
+        conversationId = conversation.id;
+        results.tests.getOrCreateConversation = {
+          name: 'Get or Create Conversation',
+          success: true,
+          data: {
+            action,
+            conversationId: conversation.id
+          }
+        };
+        results.summary.passed++;
+        console.log(`✅ Conversation ${action}: ${conversation.id}`);
+      } catch (error) {
+        results.tests.getOrCreateConversation = {
+          name: 'Get or Create Conversation',
+          success: false,
+          error: error.message
+        };
+        results.summary.failed++;
+        console.log('❌ Get or Create Conversation failed:', error.message);
+      }
+      results.summary.total++;
+
+      if (conversationId) {
+        // ==================== TEST 11: ADD MESSAGE ====================
+        console.log('\n📋 TEST 11: Add Message to Conversation');
+        try {
+          const message = await ghlService.addMessageToConversation(conversationId, {
+            contactId: contactId,
+            body: 'This is a test message from comprehensive test',
+            messageType: 'SMS',
+            direction: 'outbound',
+            fromNumber: process.env.TALLBOB_NUMBER || '+1234567890',
+            toNumber: testPhone,
+            date: new Date().toISOString()
+          });
+          results.tests.addMessage = {
+            name: 'Add Message',
+            success: true,
+            data: {
+              messageId: message.id,
+              conversationId: message.conversationId
+            }
+          };
+          results.summary.passed++;
+          console.log('✅ Message added');
+        } catch (error) {
+          results.tests.addMessage = {
+            name: 'Add Message',
+            success: false,
+            error: error.message
+          };
+          results.summary.failed++;
+          console.log('❌ Add Message failed:', error.message);
+        }
+        results.summary.total++;
+
+        // ==================== TEST 12: GET MESSAGES ====================
+        console.log('\n📋 TEST 12: Get Conversation Messages');
+        try {
+          const messages = await ghlService.getConversationMessages(conversationId);
+          results.tests.getMessages = {
+            name: 'Get Messages',
+            success: true,
+            data: { count: messages.length }
+          };
+          results.summary.passed++;
+          console.log(`✅ Retrieved ${messages.length} messages`);
+        } catch (error) {
+          results.tests.getMessages = {
+            name: 'Get Messages',
+            success: false,
+            error: error.message
+          };
+          results.summary.failed++;
+          console.log('❌ Get Messages failed:', error.message);
+        }
+        results.summary.total++;
+      }
+
+      // ==================== TEST 13: CONVERSATION EXISTS CHECK ====================
+      console.log('\n📋 TEST 13: Check if Conversation Exists');
+      try {
+        const exists = await ghlService.conversationExists(contactId);
+        results.tests.conversationExists = {
+          name: 'Conversation Exists Check',
+          success: true,
+          data: exists
+        };
+        results.summary.passed++;
+        console.log(`✅ Conversation exists check: ${exists.exists ? 'Yes' : 'No'}`);
+      } catch (error) {
+        results.tests.conversationExists = {
+          name: 'Conversation Exists Check',
+          success: false,
+          error: error.message
+        };
+        results.summary.failed++;
+        console.log('❌ Conversation exists check failed:', error.message);
+      }
+      results.summary.total++;
+
+      // ==================== TEST 14: GET CONTACT BY PHONE ====================
+      console.log('\n📋 TEST 14: Get Contact by Phone');
+      try {
+        const contact = await ghlService.getContactByPhone(testPhone);
+        results.tests.getContactByPhone = {
+          name: 'Get Contact by Phone',
+          success: true,
+          data: contact ? {
+            id: contact.id,
+            name: `${contact.firstName} ${contact.lastName}`,
+            phone: contact.phone
+          } : null
+        };
+        results.summary.passed++;
+        console.log(`✅ Get contact by phone: ${contact ? 'Found' : 'Not found'}`);
+      } catch (error) {
+        results.tests.getContactByPhone = {
+          name: 'Get Contact by Phone',
+          success: false,
+          error: error.message
+        };
+        results.summary.failed++;
+        console.log('❌ Get contact by phone failed:', error.message);
+      }
+      results.summary.total++;
+
+      // ==================== TEST 15: REMOVE TAG ====================
+      console.log('\n📋 TEST 15: Remove Tag');
+      try {
+        await ghlService.removeTagFromContact(contactId, 'test_tag_1');
+        results.tests.removeTag = {
+          name: 'Remove Tag',
+          success: true
+        };
+        results.summary.passed++;
+        console.log('✅ Tag removed');
+      } catch (error) {
+        results.tests.removeTag = {
+          name: 'Remove Tag',
+          success: false,
+          error: error.message
+        };
+        results.summary.failed++;
+        console.log('❌ Remove Tag failed:', error.message);
+      }
+      results.summary.total++;
+    }
+
+    // ==================== TEST 16: SEARCH CONTACTS ====================
+    console.log('\n📋 TEST 16: Search Contacts by Phone');
+    try {
+      const contacts = await ghlService.searchContactsByPhone(testPhone);
+      results.tests.searchContacts = {
+        name: 'Search Contacts',
+        success: true,
+        data: { count: contacts.length }
+      };
+      results.summary.passed++;
+      console.log(`✅ Found ${contacts.length} contacts`);
+    } catch (error) {
+      results.tests.searchContacts = {
+        name: 'Search Contacts',
+        success: false,
+        error: error.message
+      };
+      results.summary.failed++;
+      console.log('❌ Search Contacts failed:', error.message);
+    }
+    results.summary.total++;
+
+    // ==================== TEST 17: TEST CONNECTION ====================
+    console.log('\n📋 TEST 17: Test Connection');
+    try {
+      const connection = await ghlService.testConnection();
+      results.tests.testConnection = {
+        name: 'Test Connection',
+        success: true,
+        data: connection
+      };
+      results.summary.passed++;
+      console.log('✅ Connection test passed');
+    } catch (error) {
+      results.tests.testConnection = {
+        name: 'Test Connection',
+        success: false,
+        error: error.message
+      };
+      results.summary.failed++;
+      console.log('❌ Connection test failed:', error.message);
+    }
+    results.summary.total++;
+
+    // ==================== TEST SUMMARY ====================
+    const endTime = Date.now();
+    const duration = (endTime - startTime) / 1000;
+
+    console.log('\n✅ ========== TEST SUMMARY ==========');
+    console.log(`📍 Location ID: ${ghlService.locationId}`);
+    console.log(`📊 Tests Run: ${results.summary.total}`);
+    console.log(`✅ Passed: ${results.summary.passed}`);
+    console.log(`❌ Failed: ${results.summary.failed}`);
+    console.log(`⏱️ Duration: ${duration.toFixed(2)} seconds`);
+
+    res.json({
+      success: results.summary.failed === 0,
+      summary: results.summary,
+      duration: `${duration.toFixed(2)}s`,
+      results: results.tests
+    });
+
   } catch (error) {
+    console.error('❌ Test suite error:', error);
     res.status(500).json({
       success: false,
-      error: error.message
+      error: error.message,
+      partialResults: results
     });
   }
 });
+
 
 // Routes
 routes(app, tallbobService, ghlService, messageController)
