@@ -215,8 +215,29 @@ class GHLService {
   }
 
   /**
+   * Delete a contact
+   */
+  async deleteContact(contactId, locationId = this.locationId) {
+    try {
+      if (!locationId) throw new Error('locationId required');
+
+      console.log(`🗑️ Deleting contact: ${contactId}`);
+
+      const response = await this.client.contacts.deleteContact(
+        { contactId },
+        { headers: { locationId } }
+      );
+
+      console.log(`✅ Contact deleted: ${contactId}`);
+      return response;
+    } catch (error) {
+      console.error('❌ Delete contact failed:', error.message);
+      throw error;
+    }
+  }
+
+  /**
    * Check if a phone number exists using duplicate error detection
-   * This is more reliable than search because it uses GHL's own duplicate detection
    */
   async phoneExists(phoneNumber, locationId = this.locationId) {
     try {
@@ -225,7 +246,6 @@ class GHLService {
       console.log(`📞 Checking if phone exists: ${phoneNumber}`);
 
       // Try to create a minimal contact with just the phone number
-      // This will trigger the duplicate error if the phone exists
       const testContact = {
         phone: phoneNumber,
         firstName: 'Temp',
@@ -237,10 +257,7 @@ class GHLService {
         await this.createContact(testContact, locationId);
         // If creation succeeds, phone doesn't exist
         console.log(`✅ Phone ${phoneNumber} does not exist`);
-        
-        // Clean up the temp contact (optional - you might want to delete it)
-        // This is optional and depends on your needs
-        return false;
+        return { exists: false };
       } catch (error) {
         // Check if this is a duplicate contact error
         if (error.statusCode === 400 && 
@@ -267,14 +284,12 @@ class GHLService {
 
   /**
    * Get contact by phone number using duplicate error detection
-   * This is the most reliable way to get a contact by phone
    */
   async getContactByPhone(phoneNumber, locationId = this.locationId) {
     try {
       const result = await this.phoneExists(phoneNumber, locationId);
       
       if (result.exists && result.contactId) {
-        // Get the full contact details
         const contact = await this.getContact(result.contactId, locationId);
         return contact;
       }
@@ -431,33 +446,110 @@ class GHLService {
   }
 
   /**
+   * Get or create conversation (handles "already exists" error)
+   */
+  async getOrCreateConversation(contactId, type = 'SMS', locationId = this.locationId) {
+    try {
+      if (!locationId) throw new Error('locationId required');
+
+      console.log(`💬 Getting or creating conversation for contact: ${contactId}`);
+
+      try {
+        const conversation = await this.createConversation(contactId, type, locationId);
+        return { conversation, action: 'created' };
+      } catch (error) {
+        if (error.statusCode === 400 && 
+            error.response?.message === 'Conversation already exists' &&
+            error.response?.conversationId) {
+          
+          const existingConversationId = error.response.conversationId;
+          console.log(`📌 Using existing conversation: ${existingConversationId}`);
+          
+          return { 
+            conversation: { id: existingConversationId }, 
+            action: 'existing' 
+          };
+        }
+        throw error;
+      }
+    } catch (error) {
+      console.error('❌ Get or create conversation failed:', error.message);
+      throw error;
+    }
+  }
+
+  /**
    * Add message to conversation
+   * Uses: conversations.sendANewMessage()
+   * Docs: https://marketplace.gohighlevel.com/docs/ghl/conversations/send-a-new-message
    */
   async addMessageToConversation(conversationId, messageData, locationId = this.locationId) {
     try {
       if (!locationId) throw new Error('locationId required');
+      if (!messageData.contactId) throw new Error('contactId is required for sending messages');
 
       console.log(`📝 Adding message to conversation: ${conversationId}`);
 
+      // Determine message type based on content
+      const messageType = messageData.messageType || 'SMS';
+      
+      // Build the payload according to the API docs
       const payload = {
-        body: messageData.body,
-        messageType: messageData.messageType || 'SMS',
-        direction: messageData.direction || 'inbound',
+        type: messageType,
+        contactId: messageData.contactId,
+        message: messageData.body,
         attachments: messageData.mediaUrls || [],
-        date: messageData.date || new Date().toISOString()
+        status: messageData.direction === 'outbound' ? 'delivered' : 'pending',
+        ...(messageType === 'SMS' && {
+          fromNumber: messageData.fromNumber,
+          toNumber: messageData.toNumber
+        }),
+        ...(messageType === 'Email' && {
+          subject: messageData.subject,
+          html: messageData.html,
+          emailFrom: messageData.emailFrom,
+          emailTo: messageData.emailTo,
+          emailCc: messageData.emailCc,
+          emailBcc: messageData.emailBcc
+        }),
+        ...(messageData.replyMessageId && {
+          replyMessageId: messageData.replyMessageId
+        }),
+        ...(messageData.templateId && {
+          templateId: messageData.templateId
+        }),
+        ...(messageData.scheduledTimestamp && {
+          scheduledTimestamp: messageData.scheduledTimestamp
+        }),
+        ...(messageType === 'InternalComment' && {
+          mentions: messageData.mentions || [],
+          userId: messageData.userId
+        })
       };
 
-      const response = await this.client.conversations.createMessage(
-        conversationId,
-        payload,
-        { headers: { locationId } }
+      // Remove undefined fields
+      Object.keys(payload).forEach(key => 
+        payload[key] === undefined && delete payload[key]
       );
 
-      const message = response.message || response;
-      console.log(`✅ Message added: ${message.id}`);
-      return message;
+      console.log('Message payload:', JSON.stringify(payload, null, 2));
+
+      // Use the SDK's sendANewMessage method
+      const response = await this.client.conversations.sendANewMessage(payload);
+
+      console.log(`✅ Message added: ${response.messageId}`);
+      return {
+        id: response.messageId,
+        conversationId: response.conversationId,
+        emailMessageId: response.emailMessageId,
+        messageIds: response.messageIds,
+        msg: response.msg
+      };
     } catch (error) {
       console.error('❌ Add message failed:', error.message);
+      if (error.response?.data) {
+        console.error('Error details:', error.response.data);
+      }
       throw error;
     }
   }
@@ -481,6 +573,31 @@ class GHLService {
     } catch (error) {
       console.error('❌ Get messages failed:', error.message);
       return [];
+    }
+  }
+
+  /**
+   * Check if a conversation exists for a contact
+   */
+  async conversationExists(contactId, locationId = this.locationId) {
+    try {
+      try {
+        await this.createConversation(contactId, 'SMS', locationId);
+        return { exists: false };
+      } catch (error) {
+        if (error.statusCode === 400 && 
+            error.response?.message === 'Conversation already exists' &&
+            error.response?.conversationId) {
+          return { 
+            exists: true, 
+            conversationId: error.response.conversationId 
+          };
+        }
+        throw error;
+      }
+    } catch (error) {
+      console.error('❌ Conversation check failed:', error.message);
+      return { exists: false, error: error.message };
     }
   }
 
