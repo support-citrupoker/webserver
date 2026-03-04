@@ -2,123 +2,141 @@
 class GHLService {
   constructor(ghlClient) {
     this.client = ghlClient;
-    console.log('🔧 GHL Client initialized with sections:', 
-      Object.keys(ghlClient).filter(k => 
-        ['locations', 'contacts', 'conversations', 'campaigns'].includes(k)
-      ));
+    this.apiVersion = process.env.GHL_API_VERSION || '2021-07-28';
+    console.log('🔧 GHL Client initialized with Private Integration');
   }
 
   /**
-   * Get all locations for the agency
+   * Helper to add headers to any request
+   */
+  _addHeaders(options = {}) {
+    return {
+      ...options,
+      headers: {
+        ...options.headers,
+        Version: this.apiVersion
+      }
+    };
+  }
+
+  /**
+   * Get all locations
    */
   async getLocations() {
     try {
-      // The locations section has its own methods
-      // Based on the debug output, we need to see what methods are available
       console.log('📍 Fetching locations...');
       
-      // Try different possible method names
+      // With Private Integration token, you might need to get locations differently
+      // Option 1: If there's a locations.list() method
       const locations = await this.client.locations.list();
-      // or maybe it's this.client.locations.getAll()
-      // or this.client.locations.search()
+      
+      // Option 2: If you need to make a raw request
+      // const response = await this.client.get('/locations/', this._addHeaders());
       
       console.log(`✅ Found ${locations?.length || 0} locations`);
       return locations;
     } catch (error) {
       console.error('GHL Locations Error:', error.message);
-      // Let's see what methods are actually available
-      if (this.client.locations) {
-        console.log('Available locations methods:', 
-          Object.getOwnPropertyNames(this.client.locations)
-            .filter(m => typeof this.client.locations[m] === 'function')
-        );
-      }
       throw new Error(`Failed to get locations: ${error.message}`);
     }
   }
 
   /**
-   * Create or update a contact in GHL
+   * Search contacts by phone
+   */
+  async searchContactsByPhone(phoneNumber, locationId) {
+    try {
+      console.log(`🔍 Searching contacts with phone: ${phoneNumber}`);
+      
+      // Using the search endpoint as shown in docs pattern
+      const response = await this.client.contacts.search({
+        locationId: locationId,
+        query: phoneNumber,
+        limit: 10
+      }, this._addHeaders());
+      
+      const contacts = response.contacts || [];
+      console.log(`✅ Found ${contacts.length} contacts`);
+      return contacts;
+    } catch (error) {
+      console.error('GHL Search Error:', error.message);
+      throw new Error(`Failed to search contacts: ${error.message}`);
+    }
+  }
+
+  /**
+   * Create a contact - matches the curl example in docs
+   */
+  async createContact(contactData, locationId) {
+    try {
+      console.log(`👤 Creating contact...`);
+      
+      const contact = await this.client.contacts.create({
+        firstName: contactData.firstName,
+        lastName: contactData.lastName,
+        email: contactData.email,
+        phone: contactData.phone,
+        locationId: locationId,
+        ...contactData
+      }, this._addHeaders());
+      
+      console.log(`✅ Contact created: ${contact.id}`);
+      return contact;
+    } catch (error) {
+      console.error('GHL Create Contact Error:', error.message);
+      throw new Error(`Failed to create contact: ${error.message}`);
+    }
+  }
+
+  /**
+   * Update a contact
+   */
+  async updateContact(contactId, contactData, locationId) {
+    try {
+      console.log(`✏️ Updating contact: ${contactId}`);
+      
+      const updated = await this.client.contacts.update(contactId, {
+        ...contactData,
+        locationId: locationId
+      }, this._addHeaders());
+      
+      console.log(`✅ Contact updated`);
+      return updated;
+    } catch (error) {
+      console.error('GHL Update Contact Error:', error.message);
+      throw new Error(`Failed to update contact: ${error.message}`);
+    }
+  }
+
+  /**
+   * Create or update contact (upsert)
    */
   async upsertContact(contactData, locationId) {
     try {
-      console.log(`👤 Upserting contact with phone: ${contactData.phone}`);
+      // First try to find existing
+      const existing = await this.searchContactsByPhone(contactData.phone, locationId);
       
-      // First, search for existing contact
-      const searchResult = await this.client.contacts.search({
-        locationId: locationId,
-        query: contactData.phone
-      });
-
-      if (searchResult && searchResult.contacts && searchResult.contacts.length > 0) {
-        // Update existing contact
-        const contactId = searchResult.contacts[0].id;
-        const updated = await this.client.contacts.update(contactId, {
-          ...contactData,
-          locationId: locationId
-        });
-        console.log(`✅ Updated existing contact: ${contactId}`);
-        return { contact: updated, action: 'updated' };
+      if (existing && existing.length > 0) {
+        // Update existing
+        return {
+          contact: await this.updateContact(existing[0].id, contactData, locationId),
+          action: 'updated'
+        };
       } else {
-        // Create new contact
-        const newContact = await this.client.contacts.create({
-          ...contactData,
-          locationId: locationId
-        });
-        console.log(`✅ Created new contact: ${newContact.id}`);
-        return { contact: newContact, action: 'created' };
+        // Create new
+        return {
+          contact: await this.createContact(contactData, locationId),
+          action: 'created'
+        };
       }
     } catch (error) {
-      console.error('GHL Contact Error:', error.message);
-      throw new Error(`Failed to upsert contact: ${error.message}`);
+      console.error('GHL Upsert Error:', error.message);
+      throw error;
     }
   }
 
   /**
-   * Add a contact to a campaign
-   */
-  async addToCampaign(contactId, campaignId, locationId) {
-    try {
-      console.log(`📢 Adding contact ${contactId} to campaign ${campaignId}`);
-      
-      const result = await this.client.campaigns.addContact({
-        campaignId: campaignId,
-        contactId: contactId
-      }, {
-        locationId: locationId
-      });
-      
-      console.log(`✅ Contact added to campaign`);
-      return result;
-    } catch (error) {
-      console.error('GHL Campaign Error:', error.message);
-      throw new Error(`Failed to add contact to campaign: ${error.message}`);
-    }
-  }
-
-  /**
-   * Create a conversation in GHL
-   */
-  async createConversation(conversationData) {
-    try {
-      console.log(`💬 Creating conversation for contact: ${conversationData.contactId}`);
-      
-      const conversation = await this.client.conversations.create({
-        contactId: conversationData.contactId,
-        locationId: conversationData.locationId,
-        type: conversationData.type || 'SMS'
-      });
-      
-      console.log(`✅ Conversation created: ${conversation.id}`);
-      return conversation;
-    } catch (error) {
-      console.error('GHL Conversation Error:', error.message);
-      throw new Error(`Failed to create conversation: ${error.message}`);
-    }
-  }
-
-  /**
-   * Add a message to an existing conversation
+   * Add message to conversation
    */
   async addMessageToConversation(conversationId, messageData) {
     try {
@@ -130,7 +148,7 @@ class GHLService {
         direction: messageData.direction || 'inbound',
         attachments: messageData.mediaUrls || [],
         date: messageData.date || new Date().toISOString()
-      });
+      }, this._addHeaders());
       
       console.log(`✅ Message added: ${message.id}`);
       return message;
@@ -141,71 +159,23 @@ class GHLService {
   }
 
   /**
-   * Search contacts by phone number
+   * Create a conversation
    */
-  async searchContactsByPhone(phoneNumber, locationId) {
+  async createConversation({ contactId, locationId, type = 'SMS' }) {
     try {
-      console.log(`🔍 Searching contacts with phone: ${phoneNumber}`);
+      console.log(`💬 Creating conversation for contact: ${contactId}`);
       
-      const result = await this.client.contacts.search({
+      const conversation = await this.client.conversations.create({
+        contactId: contactId,
         locationId: locationId,
-        query: phoneNumber,
-        limit: 10
-      });
+        type: type
+      }, this._addHeaders());
       
-      const contacts = result.contacts || [];
-      console.log(`✅ Found ${contacts.length} contacts`);
-      return contacts;
+      console.log(`✅ Conversation created: ${conversation.id}`);
+      return conversation;
     } catch (error) {
-      console.error('GHL Search Error:', error.message);
-      throw new Error(`Failed to search contacts: ${error.message}`);
-    }
-  }
-
-  /**
-   * Get contact by ID
-   */
-  async getContact(contactId, locationId) {
-    try {
-      const contact = await this.client.contacts.get(contactId, {
-        locationId: locationId
-      });
-      return contact;
-    } catch (error) {
-      console.error('GHL Get Contact Error:', error.message);
-      throw new Error(`Failed to get contact: ${error.message}`);
-    }
-  }
-
-  /**
-   * Update a contact
-   */
-  async updateContact(contactId, contactData, locationId) {
-    try {
-      const updated = await this.client.contacts.update(contactId, {
-        ...contactData,
-        locationId: locationId
-      });
-      return updated;
-    } catch (error) {
-      console.error('GHL Update Contact Error:', error.message);
-      throw new Error(`Failed to update contact: ${error.message}`);
-    }
-  }
-
-  /**
-   * Delete a contact (or archive)
-   */
-  async deleteContact(contactId, locationId) {
-    try {
-      // Some GHL implementations use archive instead of delete
-      const result = await this.client.contacts.delete(contactId, {
-        locationId: locationId
-      });
-      return result;
-    } catch (error) {
-      console.error('GHL Delete Contact Error:', error.message);
-      throw new Error(`Failed to delete contact: ${error.message}`);
+      console.error('GHL Conversation Error:', error.message);
+      throw new Error(`Failed to create conversation: ${error.message}`);
     }
   }
 }

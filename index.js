@@ -133,191 +133,22 @@ app.get('/test/tallbob', async (req, res) => {
 
 })
 
-// Debug GHL client structure
-app.get('/test/ghl/debug', async (req, res) => {
-  console.log('🔍 Debugging GHL client structure...');
-  
-  const debug = {
-    clientExists: !!ghlClient,
-    methods: [],
-    availableProperties: []
-  };
 
-  if (ghlClient) {
-    // List all top-level properties/methods
-    debug.availableProperties = Object.getOwnPropertyNames(ghlClient)
-      .filter(name => !name.startsWith('_'));
-    
-    // Try to find locations-related methods
-    const locationMethods = [];
-    for (const key of Object.keys(ghlClient)) {
-      if (typeof ghlClient[key] === 'object' && ghlClient[key] !== null) {
-        debug.methods.push({
-          section: key,
-          methods: Object.getOwnPropertyNames(ghlClient[key])
-            .filter(m => typeof ghlClient[key][m] === 'function')
-        });
-      }
-    }
-  }
-
-  res.json({
-    success: true,
-    debug
-  });
-});
-
-
-// GHL test endpoint
-// Updated GHL test endpoint
-app.get('/test/ghl', async (req, res) => {
-  console.log('🧪 Running GoHighLevel connection test...');
-  
-  const results = {
-    timestamp: new Date().toISOString(),
-    tests: {}
-  };
-
-  try {
-    // Test 1: Get locations
-    console.log('\n--- Test 1: Fetching locations ---');
-    const locations = await ghlService.getLocations();
-    results.tests.locations = {
-      success: true,
-      count: locations?.length || 0,
-      firstLocationId: locations?.[0]?.id || null
-    };
-
-    if (!locations || locations.length === 0) {
-      throw new Error('No locations found');
-    }
-
-    const locationId = locations[0].id;
-
-    // Test 2: Search for test contact
-    console.log('\n--- Test 2: Searching for test contact ---');
-    const testPhone = '+15555550001';
-    let contact = null;
-    
-    const existingContacts = await ghlService.searchContactsByPhone(testPhone, locationId);
-    
-    if (existingContacts.length > 0) {
-      contact = existingContacts[0];
-      results.tests.search = {
-        success: true,
-        found: true,
-        contactId: contact.id
-      };
-      console.log(`✅ Found existing test contact: ${contact.id}`);
-    } else {
-      results.tests.search = {
-        success: true,
-        found: false
-      };
-      console.log('ℹ️ No existing test contact found');
-    }
-
-    // Test 3: Create or update contact
-    console.log('\n--- Test 3: Creating/updating contact ---');
-    const { contact: testContact, action } = await ghlService.upsertContact({
-      phone: testPhone,
-      firstName: 'Test',
-      lastName: 'User',
-      email: 'test.user@example.com',
-      tags: ['api_test', 'automated_test'],
-      customFields: [
-        { key: 'test_timestamp', value: new Date().toISOString() }
-      ]
-    }, locationId);
-    
-    results.tests.contact = {
-      success: true,
-      contactId: testContact.id,
-      action: action
-    };
-    console.log(`✅ Contact ${action}: ${testContact.id}`);
-
-    // Test 4: Create conversation
-    console.log('\n--- Test 4: Creating conversation ---');
-    const conversation = await ghlService.createConversation({
-      contactId: testContact.id,
-      locationId: locationId,
-      type: 'SMS'
-    });
-    
-    results.tests.conversation = {
-      success: true,
-      conversationId: conversation.id
-    };
-    console.log(`✅ Conversation created: ${conversation.id}`);
-
-    // Test 5: Add message
-    console.log('\n--- Test 5: Adding test message ---');
-    const message = await ghlService.addMessageToConversation(conversation.id, {
-      body: 'This is a test message from the Tall Bob integration',
-      messageType: 'SMS',
-      direction: 'outbound',
-      date: new Date().toISOString()
-    });
-    
-    results.tests.message = {
-      success: true,
-      messageId: message.id
-    };
-    console.log(`✅ Message added: ${message.id}`);
-
-    res.json({
-      success: true,
-      message: 'GHL integration test completed successfully',
-      results
-    });
-
-  } catch (error) {
-    console.error('❌ GHL test failed:', error);
-    res.status(500).json({
-      success: false,
-      error: error.message,
-      details: error.response?.data || null,
-      results
-    });
-  }
-});
-
-// Simple GHL connection test (lightweight)
 app.get('/test/ghl/ping', async (req, res) => {
   try {
+    // Try to get the first location
     const locations = await ghlService.getLocations();
-    res.json({
-      success: true,
+    res.json({ 
+      success: true, 
       message: 'GHL connection successful',
-      locationCount: locations?.length || 0,
-      timestamp: new Date().toISOString()
-    });
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      error: error.message,
-      timestamp: new Date().toISOString()
-    });
-  }
-});
-
-// Clean up test contacts (optional - run after tests)
-app.delete('/test/ghl/cleanup/:contactId', async (req, res) => {
-  const { contactId } = req.params;
-  const { locationId } = req.query;
-  
-  try {
-    // Note: GHL API might not allow direct contact deletion
-    // You might need to archive or update instead
-    res.json({
-      success: true,
-      message: `Cleanup endpoint - would delete/archive contact ${contactId}`
+      locationCount: locations?.length 
     });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
 });
+
+
 // Routes
 routes(app, tallbobService, ghlService, messageController)
 
