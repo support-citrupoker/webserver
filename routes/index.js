@@ -22,7 +22,7 @@ export default (app, tallbobService, ghlService) => {
         const {
           from: senderNumber,
           to: recipientNumber,
-          message: messageText,  // FIXED: Tall Bob uses "message" not "body"
+          message: messageText,
           media: mediaUrls,
           receivedAt
         } = messageData;
@@ -30,7 +30,7 @@ export default (app, tallbobService, ghlService) => {
         // Format phone number for GHL (add + prefix)
         const formattedPhone = `+${senderNumber.replace(/\D/g, '')}`;
 
-        // FIXED: Use stored locationId instead of calling getLocations()
+        // Use stored locationId
         const locationId = ghlService.locationId;
 
         if (!locationId) {
@@ -38,10 +38,11 @@ export default (app, tallbobService, ghlService) => {
           return res.status(200).json({ received: true, error: 'Location not configured' });
         }
 
-        // FIXED: Updated to match GHLService method signatures
         // Find or create contact in GHL
         const { contact, action } = await ghlService.upsertContact({
           phone: formattedPhone,
+          firstName: messageData.contactName?.split(' ')[0] || 'Unknown',
+          lastName: messageData.contactName?.split(' ')[1] || 'Contact',
           tags: ['tallbob_contact', messageData.type === 'message_received_mms' ? 'mms_received' : 'sms_received'],
           source: 'Tall Bob Integration',
           customFields: [
@@ -50,20 +51,23 @@ export default (app, tallbobService, ghlService) => {
           ]
         }, locationId);
 
-        // Create conversation - FIXED: Correct parameter order
-        const conversation = await ghlService.createConversation(
+        // FIXED: Use getOrCreateConversation to handle "already exists" error
+        const { conversation } = await ghlService.getOrCreateConversation(
           contact.id, 
           messageData.type === 'message_received_mms' ? 'MMS' : 'SMS', 
           locationId
         );
 
-        // Add the incoming message to conversation - FIXED: Pass locationId
+        // FIXED: Add message with required contactId field
         await ghlService.addMessageToConversation(conversation.id, {
+          contactId: contact.id,  // REQUIRED for sendANewMessage
           body: messageText,
           messageType: mediaUrls && mediaUrls.length > 0 ? 'MMS' : 'SMS',
           mediaUrls: mediaUrls,
           direction: 'inbound',
-          date: receivedAt || new Date().toISOString()
+          date: receivedAt || new Date().toISOString(),
+          fromNumber: recipientNumber,  // Your Tall Bob number
+          toNumber: formattedPhone       // Customer's number
         }, locationId);
 
         console.log(`Message processed for contact ${contact.id} (${action})`);
@@ -100,7 +104,7 @@ export default (app, tallbobService, ghlService) => {
         const {
           from: senderNumber,
           to: recipientNumber,
-          message: messageText,  // FIXED: Tall Bob uses "message" not "body"
+          message: messageText,
           media: mediaUrls,
           receivedAt
         } = messageData;
@@ -108,7 +112,7 @@ export default (app, tallbobService, ghlService) => {
         // Format phone number for GHL (add + prefix)
         const formattedPhone = `+${senderNumber.replace(/\D/g, '')}`;
 
-        // FIXED: Use stored locationId instead of calling getLocations()
+        // Use stored locationId
         const locationId = ghlService.locationId;
 
         if (!locationId) {
@@ -116,10 +120,11 @@ export default (app, tallbobService, ghlService) => {
           return res.status(200).json({ received: true, error: 'Location not configured' });
         }
 
-        // FIXED: Updated to match GHLService method signatures
         // Find or create contact in GHL
         const { contact, action } = await ghlService.upsertContact({
           phone: formattedPhone,
+          firstName: messageData.contactName?.split(' ')[0] || 'Unknown',
+          lastName: messageData.contactName?.split(' ')[1] || 'Contact',
           tags: ['tallbob_contact', messageData.type === 'message_received_mms' ? 'mms_received' : 'sms_received'],
           source: 'Tall Bob Integration',
           customFields: [
@@ -128,20 +133,23 @@ export default (app, tallbobService, ghlService) => {
           ]
         }, locationId);
 
-        // Create conversation - FIXED: Correct parameter order
-        const conversation = await ghlService.createConversation(
+        // FIXED: Use getOrCreateConversation to handle "already exists" error
+        const { conversation } = await ghlService.getOrCreateConversation(
           contact.id, 
           messageData.type === 'message_received_mms' ? 'MMS' : 'SMS', 
           locationId
         );
 
-        // Add the incoming message to conversation - FIXED: Pass locationId
+        // FIXED: Add message with required contactId field
         await ghlService.addMessageToConversation(conversation.id, {
+          contactId: contact.id,  // REQUIRED for sendANewMessage
           body: messageText,
           messageType: mediaUrls && mediaUrls.length > 0 ? 'MMS' : 'SMS',
           mediaUrls: mediaUrls,
           direction: 'inbound',
-          date: receivedAt || new Date().toISOString()
+          date: receivedAt || new Date().toISOString(),
+          fromNumber: recipientNumber,  // Your Tall Bob number
+          toNumber: formattedPhone       // Customer's number
         }, locationId);
 
         console.log(`Message processed for contact ${contact.id} (${action})`);
@@ -184,23 +192,21 @@ export default (app, tallbobService, ghlService) => {
       // Use provided locationId or fall back to configured one
       const targetLocationId = locationId || ghlService.locationId;
 
-      // Send via Tall Bob - FIXED: Use "message" not "body"
+      // Send via Tall Bob
       let result;
       if (mediaUrl) {
-        // Send as MMS if media is included
         result = await tallbobService.sendMMS({
           to,
           from,
-          message: message,  // FIXED: Tall Bob uses "message"
+          message: message,
           mediaUrl,
           reference: `ghl_${contactId || 'unknown'}_${Date.now()}`
         });
       } else {
-        // Send as SMS
         result = await tallbobService.sendSMS({
           to,
           from,
-          message: message,  // FIXED: Tall Bob uses "message"
+          message: message,
           reference: `ghl_${contactId || 'unknown'}_${Date.now()}`
         });
       }
@@ -208,21 +214,24 @@ export default (app, tallbobService, ghlService) => {
       // If we have GHL contact info, log the outgoing message
       if (targetLocationId && contactId) {
         try {
-          // First, ensure conversation exists
-          const conversation = await ghlService.createConversation(
+          // FIXED: Use getOrCreateConversation to handle "already exists" error
+          const { conversation } = await ghlService.getOrCreateConversation(
             contactId,
             mediaUrl ? 'MMS' : 'SMS',
             targetLocationId
           );
 
-          // FIXED: Pass locationId as third parameter
+          // FIXED: Add message with required contactId field
           await ghlService.addMessageToConversation(conversation.id, {
+            contactId: contactId,  // REQUIRED for sendANewMessage
             body: message,
             messageType: mediaUrl ? 'MMS' : 'SMS',
             mediaUrls: mediaUrl ? [mediaUrl] : [],
             direction: 'outbound',
             date: new Date().toISOString(),
-            providerMessageId: result.messageId
+            providerMessageId: result.messageId,
+            fromNumber: from,  // Your sender number/ID
+            toNumber: to        // Customer's number
           }, targetLocationId);
         } catch (ghlError) {
           console.error('Failed to log message in GHL:', ghlError);
