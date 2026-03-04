@@ -134,9 +134,11 @@ app.get('/test/tallbob', async (req, res) => {
 })
 
 // In index.js - Test the SDK-based service
-app.post('/test/ghl-sdk-contact', async (req, res) => {
+app.get('/test/ghl-sdk-contact', async (req, res) => {
   try {
-    const { phone, locationId } = req.body;
+    const { phone } = req.body;
+
+    const locationId = 'HXQCefpSp5wONgzAstve'
     
     // Override locationId if provided
     if (locationId) {
