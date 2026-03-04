@@ -134,7 +134,7 @@ app.get('/test/tallbob', async (req, res) => {
 })
 
 
-app.post('/test/ghl-simple', async (req, res) => {
+app.get('/test/ghl-simple', async (req, res) => {
   try {
     const { phone, locationId } = req.body;
     
