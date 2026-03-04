@@ -160,7 +160,7 @@ class GHLService {
   }
 
   /**
-   * Update an existing contact - FIXED: No headers in body
+   * Update an existing contact - FIXED: Clean data properly
    */
   async updateContact(contactId, contactData, locationId = this.locationId) {
     try {
@@ -168,20 +168,30 @@ class GHLService {
 
       console.log(`✏️ Updating contact: ${contactId}`);
 
-      // FIXED: Don't include headers in the body
-      // The SDK handles headers separately
-      const cleanData = { ...contactData };
+      // Create a clean copy of the data WITHOUT any headers or locationId
+      const cleanData = {};
       
-      if (cleanData.email === '') {
-        delete cleanData.email;
-      }
+      // Only copy valid contact fields
+      if (contactData.firstName) cleanData.firstName = contactData.firstName;
+      if (contactData.lastName) cleanData.lastName = contactData.lastName;
+      if (contactData.name) cleanData.name = contactData.name;
+      if (contactData.email && contactData.email.trim() !== '') cleanData.email = contactData.email;
+      if (contactData.phone) cleanData.phone = contactData.phone;
+      if (contactData.address1) cleanData.address1 = contactData.address1;
+      if (contactData.city) cleanData.city = contactData.city;
+      if (contactData.state) cleanData.state = contactData.state;
+      if (contactData.postalCode) cleanData.postalCode = contactData.postalCode;
+      if (contactData.country) cleanData.country = contactData.country;
+      if (contactData.website) cleanData.website = contactData.website;
+      if (contactData.timezone) cleanData.timezone = contactData.timezone;
+      if (contactData.tags) cleanData.tags = contactData.tags;
+      if (contactData.source) cleanData.source = contactData.source;
+      if (contactData.customFields) cleanData.customFields = contactData.customFields;
 
-      // Remove any header properties that might have been accidentally included
-      delete cleanData.headers;
-      delete cleanData.locationId; // locationId is passed separately
+      console.log('Update data:', JSON.stringify(cleanData, null, 2));
 
       const response = await this.client.contacts.updateContact(
-        { contactId, ...cleanData },  // Body only
+        { contactId, ...cleanData },  // Body only - no headers
         { headers: { locationId } }    // Headers separately
       );
 
@@ -463,7 +473,7 @@ class GHLService {
   }
 
   /**
-   * Add message to conversation - FIXED: Proper payload structure
+   * Add message to conversation
    */
   async addMessageToConversation(conversationId, messageData, locationId = this.locationId) {
     try {
