@@ -72,7 +72,6 @@ class GHLService {
 
       const cleanPhone = phoneNumber.replace(/\D/g, '');
       
-      // Try advanced search with filters
       const response = await this.client.contacts.searchContactsAdvanced({
         locationId: locationId,
         pageLimit: 10,
@@ -149,7 +148,6 @@ class GHLService {
       const contact = response.contact || response;
       return contact;
     } catch (error) {
-      // SILENT HANDLING: Duplicate contact error - this is how we detect existing contacts
       if (error.statusCode === 400 && 
           error.response?.message === 'This location does not allow duplicated contacts.' &&
           error.response?.meta?.contactId) {
@@ -166,7 +164,7 @@ class GHLService {
   }
 
   /**
-   * Update an existing contact - USING DIRECT AXIOS (BYPASS SDK BUG)
+   * Update an existing contact - USING DIRECT AXIOS
    */
   async updateContact(contactId, contactData, locationId = this.locationId) {
     try {
@@ -174,7 +172,6 @@ class GHLService {
 
       console.log(`✏️ Updating contact: ${contactId}`);
 
-      // Build clean payload with only fields to update
       const payload = {};
       
       if (contactData.firstName) payload.firstName = contactData.firstName;
@@ -189,7 +186,6 @@ class GHLService {
 
       console.log('Update payload:', JSON.stringify(payload, null, 2));
 
-      // Direct API call bypassing the SDK
       const response = await this.axios.put(
         `/contacts/${contactId}`,
         payload,
@@ -204,9 +200,6 @@ class GHLService {
       return response.data.contact || response.data;
     } catch (error) {
       console.error('❌ Update contact failed:', error.message);
-      if (error.response?.data) {
-        console.error('Error details:', error.response.data);
-      }
       throw error;
     }
   }
@@ -300,28 +293,6 @@ class GHLService {
       return null;
     } catch (error) {
       return null;
-    }
-  }
-
-  /**
-   * Delete a contact
-   */
-  async deleteContact(contactId, locationId = this.locationId) {
-    try {
-      if (!locationId) throw new Error('locationId required');
-
-      console.log(`🗑️ Deleting contact: ${contactId}`);
-
-      const response = await this.client.contacts.deleteContact(
-        { contactId },
-        { headers: { locationId } }
-      );
-
-      console.log(`✅ Contact deleted: ${contactId}`);
-      return response;
-    } catch (error) {
-      console.error('❌ Delete contact failed:', error.message);
-      throw error;
     }
   }
 
@@ -441,7 +412,6 @@ class GHLService {
 
       return response.conversation || response;
     } catch (error) {
-      // SILENT HANDLING: Conversation already exists
       if (error.statusCode === 400 && 
           error.response?.message === 'Conversation already exists' &&
           error.response?.conversationId) {
@@ -471,7 +441,7 @@ class GHLService {
   }
 
   /**
-   * Add message to conversation - FIXED to use addAnInboundMessage
+   * Add message to conversation - FIXED to handle attachments properly
    */
   async addMessageToConversation(conversationId, messageData, locationId = this.locationId) {
     try {
@@ -480,38 +450,27 @@ class GHLService {
 
       console.log(`📝 Adding message to conversation: ${conversationId}`);
 
-      // Build payload matching the SDK example for addAnInboundMessage
+      // Build base payload
       const payload = {
         type: messageData.messageType || 'SMS',
         conversationId: conversationId,
         contactId: messageData.contactId,
         message: messageData.body,
-        attachments: messageData.mediaUrls || [],
         direction: messageData.direction || 'inbound',
-        date: messageData.date || new Date().toISOString(),
-        ...(messageData.messageType === 'SMS' && {
-          fromNumber: messageData.fromNumber,
-          toNumber: messageData.toNumber
-        }),
-        ...(messageData.messageType === 'Email' && {
-          html: messageData.html,
-          subject: messageData.subject,
-          emailFrom: messageData.emailFrom,
-          emailTo: messageData.emailTo,
-          emailCc: messageData.emailCc,
-          emailBcc: messageData.emailBcc,
-          emailMessageId: messageData.emailMessageId
-        })
+        date: messageData.date || new Date().toISOString()
       };
 
-      // Remove undefined fields
-      Object.keys(payload).forEach(key => 
-        payload[key] === undefined && delete payload[key]
-      );
+      // Only add attachments if they actually exist
+      if (messageData.mediaUrls && messageData.mediaUrls.length > 0) {
+        payload.attachments = messageData.mediaUrls;
+      }
+
+      // Add SMS-specific fields if provided
+      if (messageData.fromNumber) payload.fromNumber = messageData.fromNumber;
+      if (messageData.toNumber) payload.toNumber = messageData.toNumber;
 
       console.log('Message payload:', JSON.stringify(payload, null, 2));
 
-      // Use the correct SDK method: addAnInboundMessage
       const response = await this.client.conversations.addAnInboundMessage(payload);
 
       console.log(`✅ Message added: ${response.id || response.messageId}`);
@@ -521,15 +480,12 @@ class GHLService {
       };
     } catch (error) {
       console.error('❌ Add message failed:', error.message);
-      if (error.response?.data) {
-        console.error('Error details:', error.response.data);
-      }
       throw error;
     }
   }
 
   /**
-   * Get conversation messages - FIXED to match SDK example
+   * Get conversation messages
    */
   async getConversationMessages(conversationId, locationId = this.locationId, limit = 20) {
     try {
@@ -537,11 +493,10 @@ class GHLService {
 
       console.log(`📋 Fetching messages for conversation: ${conversationId}`);
 
-      // Match the exact SDK pattern from the example
       const response = await this.client.conversations.getMessages({
         conversationId: conversationId,
         limit: limit,
-        type: 'TYPE_SMS,TYPE_CALL' // Optional: filter by message type
+        type: 'TYPE_SMS,TYPE_CALL'
       });
 
       console.log(`✅ Retrieved messages`);
