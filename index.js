@@ -133,44 +133,51 @@ app.get('/test/tallbob', async (req, res) => {
 
 })
 
-
-app.get('/test/ghl-simple', async (req, res) => {
+// In index.js - Test the SDK-based service
+app.post('/test/ghl-sdk-contact', async (req, res) => {
   try {
     const { phone, locationId } = req.body;
     
-    // Allow overriding locationId per request
+    // Override locationId if provided
     if (locationId) {
       ghlService.setLocationId(locationId);
     }
     
-    // Test search
-    const contacts = await ghlService.searchContactsByPhone(phone || '+237652251848');
+    // Test contact creation
+    const result = await ghlService.upsertContact({
+      firstName: 'Test',
+      lastName: 'User',
+      phone: phone || '+237652251848',
+      email: `test.${Date.now()}@example.com`,
+      tags: ['sdk_test', 'tallbob_test'],
+      source: 'SDK Test'
+    });
     
-    // Test create if no contacts found
-    let created = null;
-    if (contacts.length === 0) {
-      created = await ghlService.createContact({
-        firstName: 'Test',
-        lastName: 'User',
-        phone: phone || '+237652251848',
-        email: `test.${Date.now()}@example.com`,
-        tags: ['test_contact']
-      });
-    }
+    // Create a conversation
+    const conversation = await ghlService.createConversation(result.contact.id);
+    
+    // Add a test message
+    const message = await ghlService.addMessageToConversation(conversation.id, {
+      body: 'This is a test message from the SDK integration',
+      messageType: 'SMS',
+      direction: 'outbound'
+    });
     
     res.json({
       success: true,
       locationId: ghlService.locationId,
-      contactsFound: contacts.length,
-      contacts,
-      created
+      contact: result,
+      conversation,
+      message
     });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      details: error.response?.data
+    });
   }
 });
-
-
 
 // Routes
 routes(app, tallbobService, ghlService, messageController)
