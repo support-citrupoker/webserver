@@ -169,9 +169,9 @@ app.get('/test/ghl/debug', async (req, res) => {
 
 
 // GHL test endpoint
+// Updated GHL test endpoint
 app.get('/test/ghl', async (req, res) => {
   console.log('🧪 Running GoHighLevel connection test...');
-  console.log('GHL Token length:', process.env.GHL_PRIVATE_INTEGRATION_TOKEN?.length);
   
   const results = {
     timestamp: new Date().toISOString(),
@@ -179,7 +179,7 @@ app.get('/test/ghl', async (req, res) => {
   };
 
   try {
-    // Test 1: Get locations (basic connectivity test)
+    // Test 1: Get locations
     console.log('\n--- Test 1: Fetching locations ---');
     const locations = await ghlService.getLocations();
     results.tests.locations = {
@@ -187,79 +187,88 @@ app.get('/test/ghl', async (req, res) => {
       count: locations?.length || 0,
       firstLocationId: locations?.[0]?.id || null
     };
-    console.log(`✅ Found ${locations?.length || 0} locations`);
 
-    // Test 2: Create a test contact
-    console.log('\n--- Test 2: Creating test contact ---');
-    const testPhone = '+15555550001'; // Use a test phone number
-    const locationId = locations?.[0]?.id;
+    if (!locations || locations.length === 0) {
+      throw new Error('No locations found');
+    }
+
+    const locationId = locations[0].id;
+
+    // Test 2: Search for test contact
+    console.log('\n--- Test 2: Searching for test contact ---');
+    const testPhone = '+15555550001';
+    let contact = null;
     
-    if (locationId) {
-      const { contact, action } = await ghlService.upsertContact({
-        phone: testPhone,
-        firstName: 'Test',
-        lastName: 'User',
-        email: 'test@example.com',
-        tags: ['test_contact', 'api_test'],
-        customFields: [
-          { key: 'test_timestamp', value: new Date().toISOString() }
-        ]
-      }, locationId);
-      
-      results.tests.contact = {
-        success: true,
-        contactId: contact.id,
-        action: action
-      };
-      console.log(`✅ Contact ${action}: ${contact.id}`);
-
-      // Test 3: Create a conversation
-      console.log('\n--- Test 3: Creating conversation ---');
-      const conversation = await ghlService.createConversation({
-        contactId: contact.id,
-        locationId: locationId,
-        type: 'SMS'
-      });
-      
-      results.tests.conversation = {
-        success: true,
-        conversationId: conversation.id
-      };
-      console.log(`✅ Conversation created: ${conversation.id}`);
-
-      // Test 4: Add a test message
-      console.log('\n--- Test 4: Adding test message ---');
-      const message = await ghlService.addMessageToConversation(conversation.id, {
-        body: 'This is a test message from the integration',
-        messageType: 'SMS',
-        direction: 'outbound',
-        date: new Date().toISOString()
-      });
-      
-      results.tests.message = {
-        success: true,
-        messageId: message.id
-      };
-      console.log(`✅ Message added: ${message.id}`);
-
-      // Test 5: Search for the contact
-      console.log('\n--- Test 5: Searching contacts ---');
-      const searchResults = await ghlService.searchContactsByPhone(testPhone, locationId);
+    const existingContacts = await ghlService.searchContactsByPhone(testPhone, locationId);
+    
+    if (existingContacts.length > 0) {
+      contact = existingContacts[0];
       results.tests.search = {
         success: true,
-        foundCount: searchResults?.length || 0
+        found: true,
+        contactId: contact.id
       };
-      console.log(`✅ Found ${searchResults?.length || 0} contacts`);
-
-      // Test 6: Add to campaign (optional - uncomment if you have a test campaign)
-      // console.log('\n--- Test 6: Adding to campaign ---');
-      // const campaignResult = await ghlService.addToCampaign(contact.id, 'your_test_campaign_id', locationId);
-      // results.tests.campaign = { success: true };
+      console.log(`✅ Found existing test contact: ${contact.id}`);
+    } else {
+      results.tests.search = {
+        success: true,
+        found: false
+      };
+      console.log('ℹ️ No existing test contact found');
     }
+
+    // Test 3: Create or update contact
+    console.log('\n--- Test 3: Creating/updating contact ---');
+    const { contact: testContact, action } = await ghlService.upsertContact({
+      phone: testPhone,
+      firstName: 'Test',
+      lastName: 'User',
+      email: 'test.user@example.com',
+      tags: ['api_test', 'automated_test'],
+      customFields: [
+        { key: 'test_timestamp', value: new Date().toISOString() }
+      ]
+    }, locationId);
+    
+    results.tests.contact = {
+      success: true,
+      contactId: testContact.id,
+      action: action
+    };
+    console.log(`✅ Contact ${action}: ${testContact.id}`);
+
+    // Test 4: Create conversation
+    console.log('\n--- Test 4: Creating conversation ---');
+    const conversation = await ghlService.createConversation({
+      contactId: testContact.id,
+      locationId: locationId,
+      type: 'SMS'
+    });
+    
+    results.tests.conversation = {
+      success: true,
+      conversationId: conversation.id
+    };
+    console.log(`✅ Conversation created: ${conversation.id}`);
+
+    // Test 5: Add message
+    console.log('\n--- Test 5: Adding test message ---');
+    const message = await ghlService.addMessageToConversation(conversation.id, {
+      body: 'This is a test message from the Tall Bob integration',
+      messageType: 'SMS',
+      direction: 'outbound',
+      date: new Date().toISOString()
+    });
+    
+    results.tests.message = {
+      success: true,
+      messageId: message.id
+    };
+    console.log(`✅ Message added: ${message.id}`);
 
     res.json({
       success: true,
-      message: 'GHL integration test completed',
+      message: 'GHL integration test completed successfully',
       results
     });
 
@@ -267,9 +276,9 @@ app.get('/test/ghl', async (req, res) => {
     console.error('❌ GHL test failed:', error);
     res.status(500).json({
       success: false,
-      timestamp: new Date().toISOString(),
       error: error.message,
-      details: error.response?.data || null
+      details: error.response?.data || null,
+      results
     });
   }
 });
