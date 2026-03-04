@@ -12,8 +12,31 @@ class GHLService {
     // Store locationId from environment
     this.locationId = process.env.GHL_LOCATION_ID;
     
+    // Suppress SDK internal error logging for expected errors
+    this._suppressSDKLogging();
+    
     console.log('🔧 GHL SDK Client initialized');
     console.log(`📍 Default locationId: ${this.locationId ? 'Set' : 'Not set'}`);
+  }
+
+  /**
+   * Suppress SDK internal error logging for expected errors
+   */
+  _suppressSDKLogging() {
+    // Store original console.error
+    const originalError = console.error;
+    
+    // Override console.error to filter out expected duplicate errors
+    console.error = (...args) => {
+      const errorMsg = args.join(' ');
+      // Filter out duplicate contact errors (these are expected)
+      if (errorMsg.includes('duplicated contacts') || 
+          errorMsg.includes('Conversation already exists')) {
+        return; // Silently ignore
+      }
+      // Pass through other errors
+      originalError.apply(console, args);
+    };
   }
 
   /**
@@ -54,7 +77,7 @@ class GHLService {
       console.log(`✅ Found ${contacts.length} contacts`);
       return contacts;
     } catch (error) {
-      console.debug('🔍 Search returned no results (expected for new numbers)');
+      console.debug('🔍 Search returned no results');
       return [];
     }
   }
@@ -87,8 +110,6 @@ class GHLService {
     try {
       if (!locationId) throw new Error('locationId required');
 
-      console.log(`👤 Creating new contact: ${contactData.phone || 'unknown'}`);
-
       const formattedPhone = this.formatPhoneForGHL(contactData.phone);
 
       const payload = {
@@ -117,17 +138,14 @@ class GHLService {
       const response = await this.client.contacts.createContact(payload);
       
       const contact = response.contact || response;
-      console.log(`✅ Contact created: ${contact.id}`);
       return contact;
     } catch (error) {
-      // SILENT HANDLING: Check if this is a duplicate contact error (expected behavior)
+      // SILENT HANDLING: Check if this is a duplicate contact error
       if (error.statusCode === 400 && 
           error.response?.message === 'This location does not allow duplicated contacts.' &&
           error.response?.meta?.contactId) {
         
-        // This is NOT an error - it's how we detect existing contacts
-        // Return the existing contact info without logging as error
-        console.log(`📌 Contact already exists with ID: ${error.response.meta.contactId}`);
+        // Return the existing contact info without logging
         return {
           id: error.response.meta.contactId,
           name: error.response.meta.contactName,
@@ -136,14 +154,13 @@ class GHLService {
         };
       }
       
-      // Only log and throw for real errors
-      console.error('❌ Create contact failed:', error.message);
+      // Only throw for real errors
       throw error;
     }
   }
 
   /**
-   * Update an existing contact
+   * Update an existing contact - FIXED: No headers in body
    */
   async updateContact(contactId, contactData, locationId = this.locationId) {
     try {
@@ -151,15 +168,21 @@ class GHLService {
 
       console.log(`✏️ Updating contact: ${contactId}`);
 
+      // FIXED: Don't include headers in the body
+      // The SDK handles headers separately
       const cleanData = { ...contactData };
       
       if (cleanData.email === '') {
         delete cleanData.email;
       }
 
+      // Remove any header properties that might have been accidentally included
+      delete cleanData.headers;
+      delete cleanData.locationId; // locationId is passed separately
+
       const response = await this.client.contacts.updateContact(
-        { contactId, ...cleanData },
-        { headers: { locationId } }
+        { contactId, ...cleanData },  // Body only
+        { headers: { locationId } }    // Headers separately
       );
 
       console.log(`✅ Contact updated: ${contactId}`);
@@ -171,13 +194,11 @@ class GHLService {
   }
 
   /**
-   * Create or update contact (upsert by phone) - WITH SILENT DUPLICATE HANDLING
+   * Create or update contact (upsert by phone) - WITH SILENT HANDLING
    */
   async upsertContact(contactData, locationId = this.locationId) {
     try {
       if (!locationId) throw new Error('locationId required');
-
-      console.log(`🔄 Upserting contact with phone: ${contactData.phone}`);
 
       // Try to create the contact - will silently return existing if duplicate
       const result = await this.createContact(contactData, locationId);
@@ -219,6 +240,59 @@ class GHLService {
   }
 
   /**
+   * Check if a phone number exists - SILENT AND CLEAN
+   */
+  async phoneExists(phoneNumber, locationId = this.locationId) {
+    try {
+      if (!locationId) throw new Error('locationId required');
+
+      // Try to create a minimal contact with just the phone number
+      const testContact = {
+        phone: phoneNumber,
+        firstName: 'Temp',
+        lastName: 'Temp',
+        tags: ['temp_check']
+      };
+
+      const result = await this.createContact(testContact, locationId);
+      
+      // If we get an existing contact back
+      if (result._exists) {
+        return {
+          exists: true,
+          contactId: result.id,
+          contactName: result.name,
+          matchingField: result._matchingField
+        };
+      }
+      
+      // Phone doesn't exist and we created a temp contact
+      return { exists: false };
+      
+    } catch (error) {
+      return { exists: false, error: error.message };
+    }
+  }
+
+  /**
+   * Get contact by phone number
+   */
+  async getContactByPhone(phoneNumber, locationId = this.locationId) {
+    try {
+      const result = await this.phoneExists(phoneNumber, locationId);
+      
+      if (result.exists && result.contactId) {
+        const contact = await this.getContact(result.contactId, locationId);
+        return contact;
+      }
+      
+      return null;
+    } catch (error) {
+      return null;
+    }
+  }
+
+  /**
    * Delete a contact
    */
   async deleteContact(contactId, locationId = this.locationId) {
@@ -240,69 +314,6 @@ class GHLService {
     }
   }
 
-  /**
-   * Check if a phone number exists - SILENT AND CLEAN
-   */
-  async phoneExists(phoneNumber, locationId = this.locationId) {
-    try {
-      if (!locationId) throw new Error('locationId required');
-
-      console.log(`📞 Checking if phone exists: ${phoneNumber}`);
-
-      // Try to create a minimal contact with just the phone number
-      const testContact = {
-        phone: phoneNumber,
-        firstName: 'Temp',
-        lastName: 'Temp',
-        tags: ['temp_check']
-      };
-
-      const result = await this.createContact(testContact, locationId);
-      
-      // If we get an existing contact back
-      if (result._exists) {
-        console.log(`📌 Phone ${phoneNumber} exists (Contact ID: ${result.id})`);
-        return {
-          exists: true,
-          contactId: result.id,
-          contactName: result.name,
-          matchingField: result._matchingField
-        };
-      }
-      
-      // Phone doesn't exist and we created a temp contact
-      console.log(`✅ Phone ${phoneNumber} does not exist`);
-      
-      // Optionally delete the temp contact (uncomment if needed)
-      // await this.deleteContact(result.id, locationId);
-      
-      return { exists: false };
-      
-    } catch (error) {
-      console.debug('📞 Phone check completed');
-      return { exists: false, error: error.message };
-    }
-  }
-
-  /**
-   * Get contact by phone number
-   */
-  async getContactByPhone(phoneNumber, locationId = this.locationId) {
-    try {
-      const result = await this.phoneExists(phoneNumber, locationId);
-      
-      if (result.exists && result.contactId) {
-        const contact = await this.getContact(result.contactId, locationId);
-        return contact;
-      }
-      
-      return null;
-    } catch (error) {
-      console.debug('📞 Could not find contact by phone');
-      return null;
-    }
-  }
-
   // ==================== TAG METHODS ====================
 
   /**
@@ -312,17 +323,13 @@ class GHLService {
     try {
       if (!locationId) throw new Error('locationId required');
 
-      console.log(`🏷️ Adding tag "${tag}" to contact: ${contactId}`);
-
       const response = await this.client.contacts.addTag(
         { contactId, tag },
         { headers: { locationId } }
       );
 
-      console.log(`✅ Tag added: ${tag}`);
       return response;
     } catch (error) {
-      console.error('❌ Add tag failed:', error.message);
       return { success: false, error: error.message };
     }
   }
@@ -334,17 +341,13 @@ class GHLService {
     try {
       if (!locationId) throw new Error('locationId required');
 
-      console.log(`🏷️ Removing tag "${tag}" from contact: ${contactId}`);
-
       const response = await this.client.contacts.removeTag(
         { contactId, tag },
         { headers: { locationId } }
       );
 
-      console.log(`✅ Tag removed: ${tag}`);
       return response;
     } catch (error) {
-      console.error('❌ Remove tag failed:', error.message);
       return { success: false, error: error.message };
     }
   }
@@ -358,8 +361,6 @@ class GHLService {
     try {
       if (!locationId) throw new Error('locationId required');
 
-      console.log(`📋 Updating custom field ${fieldKey} for contact: ${contactId}`);
-
       const response = await this.client.contacts.updateCustomFields(
         { 
           contactId,
@@ -368,10 +369,8 @@ class GHLService {
         { headers: { locationId } }
       );
 
-      console.log(`✅ Custom field updated`);
       return response;
     } catch (error) {
-      console.error('❌ Update custom field failed:', error.message);
       return { success: false, error: error.message };
     }
   }
@@ -385,17 +384,13 @@ class GHLService {
     try {
       if (!locationId) throw new Error('locationId required');
 
-      console.log(`📝 Adding note to contact: ${contactId}`);
-
       const response = await this.client.contacts.addNote(
         { contactId, body: note },
         { headers: { locationId } }
       );
 
-      console.log(`✅ Note added`);
       return response;
     } catch (error) {
-      console.error('❌ Add note failed:', error.message);
       return { success: false, error: error.message };
     }
   }
@@ -407,8 +402,6 @@ class GHLService {
     try {
       if (!locationId) throw new Error('locationId required');
 
-      console.log(`📋 Fetching notes for contact: ${contactId}`);
-
       const response = await this.client.contacts.getNotes(
         { contactId },
         { headers: { locationId } }
@@ -416,7 +409,6 @@ class GHLService {
 
       return response.notes || [];
     } catch (error) {
-      console.error('❌ Get notes failed:', error.message);
       return [];
     }
   }
@@ -430,8 +422,6 @@ class GHLService {
     try {
       if (!locationId) throw new Error('locationId required');
 
-      console.log(`💬 Creating conversation for contact: ${contactId}`);
-
       const response = await this.client.conversations.createConversation({
         contactId,
         locationId,
@@ -439,28 +429,25 @@ class GHLService {
       });
 
       const conversation = response.conversation || response;
-      console.log(`✅ Conversation created: ${conversation.id}`);
       return conversation;
     } catch (error) {
-      // SILENT HANDLING: Conversation already exists (expected)
+      // SILENT HANDLING: Conversation already exists
       if (error.statusCode === 400 && 
           error.response?.message === 'Conversation already exists' &&
           error.response?.conversationId) {
         
-        console.log(`📌 Using existing conversation: ${error.response.conversationId}`);
         return {
           id: error.response.conversationId,
           _exists: true
         };
       }
       
-      console.error('❌ Create conversation failed:', error.message);
       throw error;
     }
   }
 
   /**
-   * Get or create conversation (now using silent createConversation)
+   * Get or create conversation
    */
   async getOrCreateConversation(contactId, type = 'SMS', locationId = this.locationId) {
     try {
@@ -471,20 +458,17 @@ class GHLService {
         action: conversation._exists ? 'existing' : 'created'
       };
     } catch (error) {
-      console.error('❌ Get or create conversation failed:', error.message);
       throw error;
     }
   }
 
   /**
-   * Add message to conversation
+   * Add message to conversation - FIXED: Proper payload structure
    */
   async addMessageToConversation(conversationId, messageData, locationId = this.locationId) {
     try {
       if (!locationId) throw new Error('locationId required');
-      if (!messageData.contactId) throw new Error('contactId is required for sending messages');
-
-      console.log(`📝 Adding message to conversation: ${conversationId}`);
+      if (!messageData.contactId) throw new Error('contactId is required');
 
       const messageType = messageData.messageType || 'SMS';
       
@@ -497,24 +481,16 @@ class GHLService {
         ...(messageType === 'SMS' && {
           fromNumber: messageData.fromNumber,
           toNumber: messageData.toNumber
-        }),
-        ...(messageType === 'Email' && {
-          subject: messageData.subject,
-          html: messageData.html,
-          emailFrom: messageData.emailFrom,
-          emailTo: messageData.emailTo,
-          emailCc: messageData.emailCc,
-          emailBcc: messageData.emailBcc
         })
       };
 
+      // Remove undefined fields
       Object.keys(payload).forEach(key => 
         payload[key] === undefined && delete payload[key]
       );
 
       const response = await this.client.conversations.sendANewMessage(payload);
 
-      console.log(`✅ Message added: ${response.messageId}`);
       return {
         id: response.messageId,
         conversationId: response.conversationId,
@@ -523,7 +499,6 @@ class GHLService {
         msg: response.msg
       };
     } catch (error) {
-      console.error('❌ Add message failed:', error.message);
       throw error;
     }
   }
@@ -535,8 +510,6 @@ class GHLService {
     try {
       if (!locationId) throw new Error('locationId required');
 
-      console.log(`📋 Fetching messages for conversation: ${conversationId}`);
-
       const response = await this.client.conversations.getMessages(
         conversationId,
         { limit },
@@ -545,8 +518,23 @@ class GHLService {
 
       return response.messages || [];
     } catch (error) {
-      console.error('❌ Get messages failed:', error.message);
       return [];
+    }
+  }
+
+  /**
+   * Check if a conversation exists
+   */
+  async conversationExists(contactId, locationId = this.locationId) {
+    try {
+      const result = await this.createConversation(contactId, 'SMS', locationId);
+      
+      return {
+        exists: !!result._exists,
+        conversationId: result._exists ? result.id : null
+      };
+    } catch (error) {
+      return { exists: false, error: error.message };
     }
   }
 
@@ -559,8 +547,6 @@ class GHLService {
     try {
       if (!locationId) throw new Error('locationId required');
 
-      console.log(`📍 Fetching location: ${locationId}`);
-
       const response = await this.client.locations.getLocation(
         { locationId },
         { preferredTokenType: 'location' }
@@ -568,7 +554,6 @@ class GHLService {
 
       return response.location || response;
     } catch (error) {
-      console.error('❌ Get location failed:', error.message);
       throw error;
     }
   }
@@ -592,7 +577,7 @@ class GHLService {
       if (!locationId) {
         return {
           success: false,
-          error: 'No locationId provided. Set GHL_LOCATION_ID in .env'
+          error: 'No locationId provided'
         };
       }
 
