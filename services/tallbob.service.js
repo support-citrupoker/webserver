@@ -12,7 +12,7 @@ class TallBobService {
       console.error('❌ Missing Tall Bob API credentials in environment variables.');
       // In a real app, you might throw an error or handle this more gracefully.
     }
-    const pass = `ZTRlNzU1MGMtMTA2YS0xMWYxLWIwMDAtMjM0YTI1YTI1MTFiOmYyNjc5ODZhNGFjZjk2MWE0ODQyYmRmOTcwYjY5ZThkYTBjZWM0MzZhNWVkMTE1N2Q4NTViNDExZWI4N2JjZGU=`
+    
     // Construct the Basic Auth header
     const authString = `${this.apiUsername}:${this.apiKey}`;
     const base64Auth = Buffer.from(authString).toString('base64');
