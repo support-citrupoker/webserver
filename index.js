@@ -134,6 +134,42 @@ app.get('/test/tallbob', async (req, res) => {
 })
 
 
+app.post('/test/ghl-simple', async (req, res) => {
+  try {
+    const { phone, locationId } = req.body;
+    
+    // Allow overriding locationId per request
+    if (locationId) {
+      ghlService.setLocationId(locationId);
+    }
+    
+    // Test search
+    const contacts = await ghlService.searchContactsByPhone(phone || '+237652251848');
+    
+    // Test create if no contacts found
+    let created = null;
+    if (contacts.length === 0) {
+      created = await ghlService.createContact({
+        firstName: 'Test',
+        lastName: 'User',
+        phone: phone || '+237652251848',
+        email: `test.${Date.now()}@example.com`,
+        tags: ['test_contact']
+      });
+    }
+    
+    res.json({
+      success: true,
+      locationId: ghlService.locationId,
+      contactsFound: contacts.length,
+      contacts,
+      created
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 
 
 // Routes
