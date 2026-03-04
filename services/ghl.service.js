@@ -1,12 +1,27 @@
 // services/ghl.service.js
 import { HighLevel } from '@gohighlevel/api-client';
+import axios from 'axios';
 
 class GHLService {
   constructor() {
-    // Initialize the SDK client with Private Integration Token
+    // Initialize the SDK client
     this.client = new HighLevel({
       privateIntegrationToken: process.env.GHL_PRIVATE_INTEGRATION_TOKEN,
       apiVersion: process.env.GHL_API_VERSION || '2021-07-28'
+    });
+    
+    // Also create an axios instance for direct calls
+    this.apiVersion = process.env.GHL_API_VERSION || '2021-07-28';
+    this.accessToken = process.env.GHL_PRIVATE_INTEGRATION_TOKEN;
+    this.baseURL = 'https://services.leadconnectorhq.com';
+    
+    this.axios = axios.create({
+      baseURL: this.baseURL,
+      headers: {
+        'Authorization': `Bearer ${this.accessToken}`,
+        'Content-Type': 'application/json',
+        'Version': this.apiVersion
+      }
     });
     
     // Store locationId from environment
@@ -15,7 +30,7 @@ class GHLService {
     // Suppress SDK internal error logging for expected errors
     this._suppressSDKLogging();
     
-    console.log('🔧 GHL SDK Client initialized');
+    console.log('🔧 GHL Client initialized');
     console.log(`📍 Default locationId: ${this.locationId ? 'Set' : 'Not set'}`);
   }
 
@@ -45,57 +60,30 @@ class GHLService {
   // ==================== CONTACT METHODS ====================
 
   /**
-   * Search contacts by phone number - IMPROVED with multiple search strategies
+   * Search contacts by phone number
    */
   async searchContactsByPhone(phoneNumber, locationId = this.locationId) {
     try {
-      if (!locationId) {
-        throw new Error('locationId is required');
-      }
+      if (!locationId) throw new Error('locationId required');
 
       console.log(`🔍 Searching contact with phone: ${phoneNumber}`);
 
-      // Clean the phone number - remove all non-numeric characters
       const cleanPhone = phoneNumber.replace(/\D/g, '');
       
-      // Strategy 1: Try advanced search with filters
-      try {
-        const response = await this.client.contacts.searchContactsAdvanced({
-          locationId: locationId,
-          pageLimit: 10,
-          filters: [{
-            field: "phone",
-            operator: "contains",
-            value: cleanPhone
-          }]
-        });
+      // Try advanced search with filters
+      const response = await this.client.contacts.searchContactsAdvanced({
+        locationId: locationId,
+        pageLimit: 10,
+        filters: [{
+          field: "phone",
+          operator: "contains",
+          value: cleanPhone
+        }]
+      });
 
-        if (response.contacts && response.contacts.length > 0) {
-          console.log(`✅ Found ${response.contacts.length} contacts via search`);
-          return response.contacts;
-        }
-      } catch (e) {
-        // Fall through to next strategy
-      }
-
-      // Strategy 2: Try with query parameter
-      try {
-        const response = await this.client.contacts.searchContactsAdvanced({
-          locationId: locationId,
-          query: cleanPhone,
-          pageLimit: 10
-        });
-
-        if (response.contacts && response.contacts.length > 0) {
-          console.log(`✅ Found ${response.contacts.length} contacts via query`);
-          return response.contacts;
-        }
-      } catch (e) {
-        // Fall through to next strategy
-      }
-
-      console.log('🔍 No contacts found via search');
-      return [];
+      const contacts = response.contacts || [];
+      console.log(`✅ Found ${contacts.length} contacts`);
+      return contacts;
     } catch (error) {
       console.debug('🔍 Search returned no results');
       return [];
@@ -159,7 +147,6 @@ class GHLService {
       const contact = response.contact || response;
       return contact;
     } catch (error) {
-      // SILENT HANDLING: Duplicate contact error - this is how we detect existing contacts
       if (error.statusCode === 400 && 
           error.response?.message === 'This location does not allow duplicated contacts.' &&
           error.response?.meta?.contactId) {
@@ -176,7 +163,7 @@ class GHLService {
   }
 
   /**
-   * Update an existing contact - COMPLETELY ISOLATED FROM HEADERS
+   * Update an existing contact - USING DIRECT AXIOS (BYPASS SDK BUG)
    */
   async updateContact(contactId, contactData, locationId = this.locationId) {
     try {
@@ -184,62 +171,45 @@ class GHLService {
 
       console.log(`✏️ Updating contact: ${contactId}`);
 
-      // Create a pristine object with only allowed fields
-      const cleanData = {};
+      // Build clean payload with only fields to update
+      const payload = {};
       
-      // Allowed fields for contact update
-      const allowedFields = [
-        'firstName', 'lastName', 'name', 'email', 'phone',
-        'address1', 'city', 'state', 'postalCode', 'country',
-        'website', 'timezone', 'tags', 'source', 'customFields'
-      ];
-
-      // Only copy allowed fields if they exist and have values
-      allowedFields.forEach(field => {
-        if (contactData[field] !== undefined && contactData[field] !== null) {
-          // Handle empty strings for email specially
-          if (field === 'email' && contactData[field] === '') {
-            return;
-          }
-          
-          // Deep clone arrays and objects to avoid reference issues
-          if (Array.isArray(contactData[field])) {
-            cleanData[field] = JSON.parse(JSON.stringify(contactData[field]));
-          } else if (typeof contactData[field] === 'object' && contactData[field] !== null) {
-            cleanData[field] = JSON.parse(JSON.stringify(contactData[field]));
-          } else {
-            cleanData[field] = contactData[field];
-          }
-        }
-      });
-
-      // Explicitly remove any potential headers or locationId that might have snuck in
-      delete cleanData.headers;
-      delete cleanData.locationId;
-
-      console.log('Clean update data:', JSON.stringify(cleanData, null, 2));
-
-      // Only proceed if there's actual data to update
-      if (Object.keys(cleanData).length === 0) {
-        console.log('⚠️ No data to update');
-        return await this.getContact(contactId, locationId);
+      if (contactData.firstName) payload.firstName = contactData.firstName;
+      if (contactData.lastName) payload.lastName = contactData.lastName;
+      if (contactData.email && contactData.email.trim() !== '') payload.email = contactData.email;
+      if (contactData.phone) payload.phone = contactData.phone;
+      if (contactData.tags && Array.isArray(contactData.tags)) payload.tags = contactData.tags;
+      if (contactData.source) payload.source = contactData.source;
+      if (contactData.customFields && Array.isArray(contactData.customFields)) {
+        payload.customFields = contactData.customFields;
       }
 
-      const response = await this.client.contacts.updateContact(
-        { contactId, ...cleanData },  // Data goes in the first parameter
-        { headers: { locationId } }    // Headers go in the second parameter
+      console.log('Update payload:', JSON.stringify(payload, null, 2));
+
+      // Direct API call bypassing the SDK
+      const response = await this.axios.put(
+        `/contacts/${contactId}`,
+        payload,
+        {
+          headers: {
+            'locationId': locationId
+          }
+        }
       );
 
       console.log(`✅ Contact updated: ${contactId}`);
-      return response.contact || response;
+      return response.data.contact || response.data;
     } catch (error) {
       console.error('❌ Update contact failed:', error.message);
+      if (error.response?.data) {
+        console.error('Error details:', error.response.data);
+      }
       throw error;
     }
   }
 
   /**
-   * Create or update contact (upsert by phone) - USING DUPLICATE ERRORS
+   * Create or update contact (upsert by phone)
    */
   async upsertContact(contactData, locationId = this.locationId) {
     try {
@@ -247,17 +217,13 @@ class GHLService {
 
       console.log(`🔄 Upserting contact with phone: ${contactData.phone}`);
 
-      // Try to create the contact - will return existing contact info if duplicate
       const result = await this.createContact(contactData, locationId);
       
-      // Check if this was an existing contact
       if (result._exists) {
-        console.log(`📌 Found existing contact via duplicate error: ${result.id}`);
+        console.log(`📌 Found existing contact: ${result.id}`);
         
-        // Get the full contact details
         const existingContact = await this.getContact(result.id, locationId);
         
-        // Prepare update data - merge new data with existing
         const updateData = {
           firstName: contactData.firstName || existingContact.firstName,
           lastName: contactData.lastName || existingContact.lastName,
@@ -273,15 +239,10 @@ class GHLService {
           ]
         };
 
-        // SAFETY: Remove any potential headers property
-        delete updateData.headers;
-        delete updateData.locationId;
-
         const updated = await this.updateContact(result.id, updateData, locationId);
         return { contact: updated, action: 'updated' };
       }
       
-      // New contact created
       return { contact: result, action: 'created' };
       
     } catch (error) {
@@ -291,13 +252,12 @@ class GHLService {
   }
 
   /**
-   * Check if a phone number exists - USING DUPLICATE ERROR (MOST RELIABLE)
+   * Check if a phone number exists
    */
   async phoneExists(phoneNumber, locationId = this.locationId) {
     try {
       if (!locationId) throw new Error('locationId required');
 
-      // Try to create a minimal contact - will trigger duplicate error if exists
       const testContact = {
         phone: phoneNumber,
         firstName: 'Temp',
@@ -312,12 +272,11 @@ class GHLService {
           exists: true,
           contactId: result.id,
           contactName: result.name,
-          matchingField: result._matchingField,
-          method: 'duplicate_detection'
+          matchingField: result._matchingField
         };
       }
       
-      return { exists: false, method: 'duplicate_detection' };
+      return { exists: false };
       
     } catch (error) {
       return { exists: false, error: error.message };
@@ -325,42 +284,19 @@ class GHLService {
   }
 
   /**
-   * Get contact by phone number - USING DUPLICATE ERROR (MOST RELIABLE)
+   * Get contact by phone number
    */
   async getContactByPhone(phoneNumber, locationId = this.locationId) {
     try {
       const result = await this.phoneExists(phoneNumber, locationId);
       
       if (result.exists && result.contactId) {
-        const contact = await this.getContact(result.contactId, locationId);
-        return contact;
+        return await this.getContact(result.contactId, locationId);
       }
       
       return null;
     } catch (error) {
       return null;
-    }
-  }
-
-  /**
-   * Delete a contact
-   */
-  async deleteContact(contactId, locationId = this.locationId) {
-    try {
-      if (!locationId) throw new Error('locationId required');
-
-      console.log(`🗑️ Deleting contact: ${contactId}`);
-
-      const response = await this.client.contacts.deleteContact(
-        { contactId },
-        { headers: { locationId } }
-      );
-
-      console.log(`✅ Contact deleted: ${contactId}`);
-      return response;
-    } catch (error) {
-      console.error('❌ Delete contact failed:', error.message);
-      throw error;
     }
   }
 
