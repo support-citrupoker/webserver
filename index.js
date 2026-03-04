@@ -10,7 +10,6 @@ import path from 'path'
 import { fileURLToPath } from 'url'
 import { dirname } from 'path'
 import cors from 'cors'
-import { HighLevel } from '@gohighlevel/api-client';
 import TallBobService from './services/tallbob.service.js';
 import GHLService from './services/ghl.service.js';
 import webhookRoutes from './routes/webhooks.js';
@@ -40,14 +39,8 @@ const sleep = (seconds, milliseconds = false) => {
   return new Promise(resolve => setTimeout(resolve, delay));
 }
 
-// Initialize clients
-const ghlClient = new HighLevel({
-  privateIntegrationToken: process.env.GHL_PRIVATE_INTEGRATION_TOKEN,
-  apiVersion: process.env.GHL_API_VERSION || '2021-07-28'
-})
-
 const tallbobService = new TallBobService()
-const ghlService = new GHLService(ghlClient)
+const ghlService = new GHLService()
 
 // Initialize controller with services
 const messageController = new MessageController(tallbobService, ghlService);
@@ -133,49 +126,66 @@ app.get('/test/tallbob', async (req, res) => {
 
 })
 
-
-app.get('/test/ghl/ping', async (req, res) => {
+app.post('/test/ghl/create-contact', async (req, res) => {
   try {
-    // Try to get the first location
-    const locations = await ghlService.getLocations();
-    res.json({ 
-      success: true, 
-      message: 'GHL connection successful',
-      locationCount: locations?.length 
-    });
-  } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
-  }
-});
-
-// Debug GHL location methods
-app.get('/test/ghl/location-methods', async (req, res) => {
-  const debug = {
-    locationsExists: !!ghlClient.locations,
-    locationMethods: [],
-    clientProperties: []
-  };
-
-  if (ghlClient.locations) {
-    // Get all methods of the locations object
-    debug.locationMethods = Object.getOwnPropertyNames(ghlClient.locations)
-      .filter(prop => typeof ghlClient.locations[prop] === 'function');
+    console.log('🧪 Testing GHL contact creation...');
     
-    // Also check if locations is a function itself
-    if (typeof ghlClient.locations === 'function') {
-      debug.locationsIsFunction = true;
+    // Get first location
+    const locations = await ghlService.getLocations();
+    if (!locations || locations.length === 0) {
+      return res.status(400).json({ error: 'No locations found' });
     }
+    
+    const locationId = locations[0].id;
+    console.log(`Using location: ${locationId}`);
+    
+    // Test contact data based on the API example
+    const contactData = {
+      firstName: "Rosan",
+      lastName: "Deo",
+      name: "Rosan Deo",
+      email: "rosan@deos.com",
+      phone: "+237652251848", // Your Cameroon number
+      address1: "3535 1st St N",
+      city: "Dolomite",
+      state: "AL",
+      postalCode: "35061",
+      country: "US",
+      website: "https://example.com",
+      timezone: "America/New_York",
+      gender: "male",
+      dateOfBirth: "1990-09-25",
+      companyName: "Test Company",
+      source: "API Test",
+      tags: ["test_contact", "tallbob_test", "api_created"],
+      dnd: false,
+      customFields: [
+        {
+          key: "test_field",
+          field_value: "Test value from API"
+        }
+      ]
+    };
+    
+    console.log('Attempting to create/update contact...');
+    const result = await ghlService.upsertContact(contactData, locationId);
+    
+    res.json({
+      success: true,
+      message: `Contact ${result.action} successfully`,
+      action: result.action,
+      contact: result.contact
+    });
+    
+  } catch (error) {
+    console.error('❌ Test failed:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      details: error.response?.data || null
+    });
   }
-
-  // Also show top-level client methods that might return locations
-  debug.clientProperties = Object.getOwnPropertyNames(ghlClient)
-    .filter(prop => typeof ghlClient[prop] === 'function');
-
-  res.json({
-    success: true,
-    debug
-  });
-});
+})
 
 
 // Routes
