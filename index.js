@@ -126,7 +126,7 @@ app.get('/test/tallbob', async (req, res) => {
 
 })
 
-app.post('/test/ghl/create-contact', async (req, res) => {
+app.get('/test/ghl/create-contact', async (req, res) => {
   try {
     console.log('🧪 Testing GHL contact creation...');
     
@@ -186,7 +186,6 @@ app.post('/test/ghl/create-contact', async (req, res) => {
     });
   }
 })
-
 
 // Routes
 routes(app, tallbobService, ghlService, messageController)
