@@ -134,7 +134,7 @@ app.get('/test/tallbob', async (req, res) => {
 })
 
 // Test route for adding conversation to existing contact by phone
-app.post('/test/add-conversation-to-existing', async (req, res) => {
+app.get('/test/add-conversation-to-existing', async (req, res) => {
   try {
     const { phone, message } = req.body;
     
@@ -242,7 +242,7 @@ app.post('/test/add-conversation-to-existing', async (req, res) => {
 });
 
 // Alternative: Test route that creates a contact if it doesn't exist
-app.post('/test/ensure-contact-and-conversation', async (req, res) => {
+app.get('/test/ensure-contact-and-conversation', async (req, res) => {
   try {
     const { phone, firstName, lastName, message } = req.body;
     
