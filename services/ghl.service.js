@@ -176,7 +176,7 @@ class GHLService {
   }
 
   /**
-   * Update an existing contact - FIXED to match the SDK example
+   * Update an existing contact - COMPLETELY ISOLATED FROM HEADERS
    */
   async updateContact(contactId, contactData, locationId = this.locationId) {
     try {
@@ -184,40 +184,50 @@ class GHLService {
 
       console.log(`✏️ Updating contact: ${contactId}`);
 
-      // Build the update payload exactly like the SDK example
-      const payload = {
-        contactId: contactId,
-        firstName: contactData.firstName,
-        lastName: contactData.lastName,
-        name: contactData.name,
-        email: contactData.email,
-        phone: contactData.phone,
-        address1: contactData.address1,
-        city: contactData.city,
-        state: contactData.state,
-        postalCode: contactData.postalCode,
-        country: contactData.country,
-        website: contactData.website,
-        timezone: contactData.timezone,
-        tags: contactData.tags,
-        source: contactData.source,
-        customFields: contactData.customFields
-      };
+      // Create a pristine object with only allowed fields
+      const cleanData = {};
+      
+      // Allowed fields for contact update
+      const allowedFields = [
+        'firstName', 'lastName', 'name', 'email', 'phone',
+        'address1', 'city', 'state', 'postalCode', 'country',
+        'website', 'timezone', 'tags', 'source', 'customFields'
+      ];
 
-      // Remove undefined fields
-      Object.keys(payload).forEach(key => {
-        if (payload[key] === undefined) delete payload[key];
+      // Only copy allowed fields if they exist and have values
+      allowedFields.forEach(field => {
+        if (contactData[field] !== undefined && contactData[field] !== null) {
+          // Handle empty strings for email specially
+          if (field === 'email' && contactData[field] === '') {
+            return;
+          }
+          
+          // Deep clone arrays and objects to avoid reference issues
+          if (Array.isArray(contactData[field])) {
+            cleanData[field] = JSON.parse(JSON.stringify(contactData[field]));
+          } else if (typeof contactData[field] === 'object' && contactData[field] !== null) {
+            cleanData[field] = JSON.parse(JSON.stringify(contactData[field]));
+          } else {
+            cleanData[field] = contactData[field];
+          }
+        }
       });
 
-      // Remove contactId from payload since it's passed separately
-      delete payload.contactId;
+      // Explicitly remove any potential headers or locationId that might have snuck in
+      delete cleanData.headers;
+      delete cleanData.locationId;
 
-      console.log('Update payload:', JSON.stringify(payload, null, 2));
+      console.log('Clean update data:', JSON.stringify(cleanData, null, 2));
 
-      // The SDK handles headers internally - we just pass the data
+      // Only proceed if there's actual data to update
+      if (Object.keys(cleanData).length === 0) {
+        console.log('⚠️ No data to update');
+        return await this.getContact(contactId, locationId);
+      }
+
       const response = await this.client.contacts.updateContact(
-        { contactId, ...payload },
-        { headers: { locationId } }
+        { contactId, ...cleanData },  // Data goes in the first parameter
+        { headers: { locationId } }    // Headers go in the second parameter
       );
 
       console.log(`✅ Contact updated: ${contactId}`);
@@ -262,6 +272,10 @@ class GHLService {
             ...(contactData.customFields || [])
           ]
         };
+
+        // SAFETY: Remove any potential headers property
+        delete updateData.headers;
+        delete updateData.locationId;
 
         const updated = await this.updateContact(result.id, updateData, locationId);
         return { contact: updated, action: 'updated' };
