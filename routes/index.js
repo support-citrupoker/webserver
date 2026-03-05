@@ -190,10 +190,9 @@ export default (app, tallbobService, ghlService) => {
       console.log(req.body)
       
       console.log('webhook works')
-      
+
       res.json({
         success: true,
-        messageId: result.messageId,
         provider: 'Tall Bob',
         timestamp: new Date().toISOString()
       });
