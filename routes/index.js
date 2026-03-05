@@ -185,11 +185,12 @@ export default (app, tallbobService, ghlService) => {
   })
 
   // ==================== SEND MESSAGE VIA TALL BOB ====================
-  app.post('/tallbob/send-message', async (req, res) => {
+  app.get('/tallbob/send-message', async (req, res) => {
     try {
       console.log(req.body)
       
-
+      console.log('webhook works')
+      
       res.json({
         success: true,
         messageId: result.messageId,
