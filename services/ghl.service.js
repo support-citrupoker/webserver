@@ -529,9 +529,7 @@ async getAllConversationMessages(conversationId, locationId = this.locationId, m
     while (hasMore) {
       // Build request parameters
       const params = {
-        conversationId: conversationId,
-        limit: pageSize,
-        type: "TYPE_SMS"
+        conversationId: conversationId
       };
 
       // Add lastMessageId for pagination if we have it
