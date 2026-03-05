@@ -188,69 +188,7 @@ export default (app, tallbobService, ghlService) => {
   app.post('/tallbob/send-message', async (req, res) => {
     try {
       console.log(req.body)
-      const {
-        to,
-        from,
-        message,
-        mediaUrl,
-        locationId,
-        contactId
-      } = req.body;
-
-      // Validate required fields
-      if (!to || !from || !message) {
-        return res.status(400).json({ 
-          error: 'Missing required fields: to, from, and message are required' 
-        });
-      }
-
-      // Use provided locationId or fall back to configured one
-      const targetLocationId = locationId || ghlService.locationId;
-
-      // Send via Tall Bob
-      let result;
-      if (mediaUrl) {
-        result = await tallbobService.sendMMS({
-          to,
-          from,
-          message: message,
-          mediaUrl,
-          reference: `ghl_${contactId || 'unknown'}_${Date.now()}`
-        });
-      } else {
-        result = await tallbobService.sendSMS({
-          to,
-          from,
-          message: message,
-          reference: `ghl_${contactId || 'unknown'}_${Date.now()}`
-        });
-      }
-
-      // If we have GHL contact info, log the outgoing message
-      if (targetLocationId && contactId) {
-        try {
-          const { conversation } = await ghlService.getOrCreateConversation(
-            contactId,
-            mediaUrl ? 'MMS' : 'SMS',
-            targetLocationId
-          );
-
-          await ghlService.addMessageToConversation(conversation.id, {
-            contactId: contactId,
-            body: message,
-            messageType: mediaUrl ? 'MMS' : 'SMS',
-            mediaUrls: mediaUrl ? [mediaUrl] : [],
-            direction: 'outbound',
-            date: new Date().toISOString(),
-            providerMessageId: result.messageId,
-            fromNumber: from,
-            toNumber: to
-          }, targetLocationId);
-        } catch (ghlError) {
-          console.error('Failed to log message in GHL:', ghlError);
-          // Don't fail the main request if GHL logging fails
-        }
-      }
+      
 
       res.json({
         success: true,
