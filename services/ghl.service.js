@@ -485,7 +485,7 @@ class GHLService {
   }
 
   /**
-   * Get conversation messages
+   * Get conversation messages (single page)
    */
   async getConversationMessages(conversationId, locationId = this.locationId, limit = 20) {
     try {
@@ -504,6 +504,60 @@ class GHLService {
     } catch (error) {
       console.error('❌ Get messages failed:', error.message);
       return [];
+    }
+  }
+
+  /**
+   * Get ALL messages from a conversation (handles pagination automatically)
+   * @param {string} conversationId - The conversation ID
+   * @param {string} locationId - Location ID (optional)
+   * @param {string} messageTypes - Types of messages to fetch (default: all types)
+   * @returns {Promise<Array>} Array of all messages
+   */
+  async getAllConversationMessages(conversationId, locationId = this.locationId, messageTypes = 'TYPE_SMS,TYPE_CALL,TYPE_EMAIL,TYPE_INTERNAL_COMMENT') {
+    try {
+      if (!locationId) throw new Error('locationId required');
+      if (!conversationId) throw new Error('conversationId required');
+
+      console.log(`📋 Fetching ALL messages for conversation: ${conversationId}`);
+      
+      let allMessages = [];
+      let lastMessageId = null;
+      let hasMore = true;
+      const pageSize = 100; // Maximum allowed per page
+
+      while (hasMore) {
+        // Build request parameters
+        const params = {
+          conversationId: conversationId,
+          limit: pageSize,
+          type: messageTypes
+        };
+
+        // Add lastMessageId for pagination if we have it
+        if (lastMessageId) {
+          params.lastMessageId = lastMessageId;
+        }
+
+        // Make the API call
+        const response = await this.client.conversations.getMessages(params);
+        const messages = response.messages || [];
+        
+        if (messages.length > 0) {
+          allMessages = [...allMessages, ...messages];
+          lastMessageId = messages[messages.length - 1].id;
+          console.log(`📦 Fetched ${messages.length} messages (total: ${allMessages.length})`);
+        }
+
+        // Check if there might be more messages
+        hasMore = messages.length === pageSize;
+      }
+
+      console.log(`✅ Retrieved all ${allMessages.length} messages from conversation ${conversationId}`);
+      return allMessages;
+    } catch (error) {
+      console.error('❌ Get all conversation messages failed:', error.message);
+      throw error;
     }
   }
 

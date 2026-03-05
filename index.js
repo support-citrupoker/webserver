@@ -621,6 +621,124 @@ app.get('/test/ghl/comprehensive', async (req, res) => {
 });
 
 
+// Simple test route to get messages by phone number
+app.get('/test/ghl/messages-by-phone', async (req, res) => {
+  try {
+    const { phone } = req.query;
+    
+    if (!phone) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Please provide a phone number using ?phone= parameter' 
+      });
+    }
+
+    console.log(`\n📱 Getting messages for phone: ${phone}`);
+    
+    // ==================== STEP 1: Format phone number ====================
+    // Remove all non-numeric characters and add + for GHL
+    const cleanPhone = phone.replace(/\D/g, '');
+    const formattedPhone = `+${cleanPhone}`;
+    console.log(`📞 Formatted phone: ${formattedPhone}`);
+
+    // ==================== STEP 2: Find contact by phone ====================
+    console.log(`🔍 Searching for contact with phone: ${formattedPhone}`);
+    const contacts = await ghlService.searchContactsByPhone(formattedPhone);
+    
+    if (!contacts || contacts.length === 0) {
+      return res.json({
+        success: false,
+        message: 'No contact found with this phone number',
+        phone: formattedPhone,
+        contacts: []
+      });
+    }
+
+    const contact = contacts[0];
+    console.log(`✅ Found contact: ${contact.id} - ${contact.firstName || ''} ${contact.lastName || ''}`);
+
+    // ==================== STEP 3: Get conversation for contact ====================
+    console.log(`💬 Getting conversation for contact: ${contact.id}`);
+    const { conversation } = await ghlService.getOrCreateConversation(
+      contact.id,
+      'SMS'
+    );
+
+    console.log(`✅ Conversation ID: ${conversation.id}`);
+
+    // ==================== STEP 4: Get all messages ====================
+    console.log(`📋 Fetching all messages...`);
+    const messages = await ghlService.getAllConversationMessages(
+      conversation.id,
+      ghlService.locationId,
+      'TYPE_SMS,TYPE_CALL,TYPE_EMAIL,TYPE_INTERNAL_COMMENT'
+    );
+
+    console.log(`✅ Found ${messages.length} total messages`);
+
+    // ==================== STEP 5: Format messages for display ====================
+    const formattedMessages = messages.map(msg => ({
+      id: msg.id,
+      type: msg.type,
+      direction: msg.direction,
+      date: msg.date || msg.createdAt,
+      body: msg.body || msg.message || '(no content)',
+      from: msg.fromNumber || msg.from,
+      to: msg.toNumber || msg.to,
+      attachments: msg.attachments || []
+    }));
+
+    // Separate by type
+    const smsMessages = formattedMessages.filter(m => m.type === 'TYPE_SMS');
+    const internalComments = formattedMessages.filter(m => m.type === 'TYPE_INTERNAL_COMMENT');
+    const emails = formattedMessages.filter(m => m.type === 'TYPE_EMAIL');
+    const calls = formattedMessages.filter(m => m.type === 'TYPE_CALL');
+
+    // ==================== STEP 6: Return results ====================
+    res.json({
+      success: true,
+      timestamp: new Date().toISOString(),
+      query: {
+        original: phone,
+        formatted: formattedPhone
+      },
+      contact: {
+        id: contact.id,
+        name: `${contact.firstName || ''} ${contact.lastName || ''}`.trim() || 'Unknown',
+        phone: contact.phone,
+        email: contact.email || 'No email',
+        tags: contact.tags || []
+      },
+      conversation: {
+        id: conversation.id
+      },
+      messages: {
+        total: messages.length,
+        byType: {
+          sms: smsMessages.length,
+          internalComments: internalComments.length,
+          emails: emails.length,
+          calls: calls.length
+        },
+        all: formattedMessages,
+        sms: smsMessages,
+        internalComments: internalComments,
+        emails: emails,
+        calls: calls
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+    });
+  }
+});
+
+
 // Routes
 routes(app, tallbobService, ghlService, messageController)
 
