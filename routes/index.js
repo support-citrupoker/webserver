@@ -187,6 +187,7 @@ export default (app, tallbobService, ghlService) => {
   // ==================== SEND MESSAGE VIA TALL BOB ====================
   app.post('/tallbob/send-message', async (req, res) => {
     try {
+      console.log(req.body)
       const {
         to,
         from,
