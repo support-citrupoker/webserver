@@ -507,7 +507,7 @@ class GHLService {
     }
   }
 
-  /**
+ /**
  * Get ALL messages from a conversation (handles pagination automatically)
  * @param {string} conversationId - The conversation ID
  * @param {string} locationId - Location ID (optional)
@@ -559,7 +559,7 @@ async getAllConversationMessages(conversationId, locationId = this.locationId, m
     console.error('❌ Get all conversation messages failed:', error.message);
     throw error;
   }
-}
+  }
 
   /**
    * Check if a conversation exists
