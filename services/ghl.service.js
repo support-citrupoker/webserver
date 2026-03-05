@@ -13,7 +13,7 @@ class GHLService {
     // Also create an axios instance for direct calls
     this.apiVersion = process.env.GHL_API_VERSION || '2021-07-28';
     this.accessToken = process.env.GHL_PRIVATE_INTEGRATION_TOKEN;
-    this.baseURL = 'https://services.leadconnectorhq.com'; 
+    this.baseURL = 'https://services.leadconnectorhq.com';
     
     this.axios = axios.create({
       baseURL: this.baseURL,
@@ -507,62 +507,181 @@ class GHLService {
     }
   }
 
- /**
- * Get ALL messages from a conversation using direct axios call (handles pagination automatically)
- * @param {string} conversationId - The conversation ID
- * @param {string} locationId - Location ID (optional)
- * @returns {Promise<Array>} Array of all messages
- */
-async getAllConversationMessages(conversationId, locationId = this.locationId) {
-  try {
-    if (!locationId) throw new Error('locationId required');
-    if (!conversationId) throw new Error('conversationId required');
+  /**
+   * Get ALL messages from a conversation using direct axios call (handles pagination automatically)
+   * @param {string} conversationId - The conversation ID
+   * @param {string} locationId - Location ID (optional)
+   * @returns {Promise<Array>} Array of all messages
+   */
+  async getAllConversationMessages(conversationId, locationId = this.locationId) {
+    try {
+      if (!locationId) throw new Error('locationId required');
+      if (!conversationId) throw new Error('conversationId required');
 
-    console.log(`📋 Fetching ALL messages for conversation: ${conversationId}`);
-    
-    let allMessages = [];
-    let lastMessageId = null;
-    let hasMore = true;
-    const pageSize = 100; // Maximum allowed per page
-
-    while (hasMore) {
-      // Build URL with query parameters
-      let url = `/conversations/${conversationId}/messages?limit=${pageSize}`;
+      console.log(`📋 Fetching ALL messages for conversation: ${conversationId}`);
       
-      // Add lastMessageId for pagination if we have it
-      if (lastMessageId) {
-        url += `&lastMessageId=${lastMessageId}`;
+      let allMessages = [];
+      let lastMessageId = null;
+      let hasMore = true;
+      const pageSize = 100;
+
+      while (hasMore) {
+        let url = `/conversations/${conversationId}/messages?limit=${pageSize}`;
+        
+        if (lastMessageId) {
+          url += `&lastMessageId=${lastMessageId}`;
+        }
+
+        const response = await this.axios.get(url, {
+          headers: {
+            'locationId': locationId
+          }
+        });
+        
+        const messages = response.data.messages || [];
+        
+        if (messages.length > 0) {
+          allMessages = [...allMessages, ...messages];
+          lastMessageId = messages[messages.length - 1].id;
+          console.log(`📦 Fetched ${messages.length} messages (total: ${allMessages.length})`);
+        }
+
+        hasMore = messages.length === pageSize;
       }
 
-      // Make the API call using axios
-      const response = await this.axios.get(url, {
-        headers: {
-          'locationId': locationId
-        }
+      console.log(`✅ Retrieved all ${allMessages.length} messages from conversation ${conversationId}`);
+      return allMessages;
+    } catch (error) {
+      console.error('❌ Get all conversation messages failed:', error.message);
+      if (error.response?.data) {
+        console.error('Error details:', error.response.data);
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Search for conversations by contact ID and location ID
+   * @param {Object} options - Search options
+   * @param {string} options.contactId - The contact ID
+   * @param {string} options.locationId - Location ID (optional, uses default)
+   * @param {number} options.limit - Number of conversations to return (default: 20)
+   * @param {string} options.query - Search query string
+   * @param {string} options.sort - Sort order ('asc' or 'desc')
+   * @param {string} options.sortBy - Field to sort by (e.g., 'last_message_date')
+   * @param {string} options.lastMessageType - Filter by last message type
+   * @param {string} options.lastMessageDirection - Filter by direction ('inbound'/'outbound')
+   * @param {string} options.status - Conversation status
+   * @returns {Promise<Array>} Array of conversations
+   */
+  async searchConversations({ 
+    contactId, 
+    locationId = this.locationId,
+    limit = 20,
+    query = '',
+    sort = 'desc',
+    sortBy = 'last_message_date',
+    lastMessageType = '',
+    lastMessageDirection = '',
+    status = 'all',
+    startAfterDate = null,
+    id = null
+  }) {
+    try {
+      if (!locationId) throw new Error('locationId required');
+      if (!contactId) throw new Error('contactId required');
+
+      console.log(`🔍 Searching conversations for contact: ${contactId}`);
+
+      const searchParams = {
+        locationId: locationId,
+        contactId: contactId,
+        limit: limit,
+        sort: sort,
+        sortBy: sortBy,
+        status: status
+      };
+
+      if (query) searchParams.query = query;
+      if (lastMessageType) searchParams.lastMessageType = lastMessageType;
+      if (lastMessageDirection) searchParams.lastMessageDirection = lastMessageDirection;
+      if (startAfterDate) searchParams.startAfterDate = startAfterDate;
+      if (id) searchParams.id = id;
+
+      console.log('📋 Search params:', JSON.stringify(searchParams, null, 2));
+
+      const response = await this.client.conversations.searchConversation(searchParams);
+      
+      const conversations = response.conversations || [];
+      console.log(`✅ Found ${conversations.length} conversations`);
+      
+      return conversations;
+    } catch (error) {
+      console.error('❌ Search conversations failed:', error.message);
+      throw error;
+    }
+  }
+
+  /**
+   * Get all conversations for a contact with their messages
+   * @param {string} contactId - The contact ID
+   * @param {string} locationId - Location ID (optional)
+   * @returns {Promise<Object>} Contact conversations with messages
+   */
+  async getContactConversationsWithMessages(contactId, locationId = this.locationId) {
+    try {
+      if (!locationId) throw new Error('locationId required');
+      if (!contactId) throw new Error('contactId required');
+
+      console.log(`📱 Getting all conversations for contact: ${contactId}`);
+      
+      const conversations = await this.searchConversations({
+        contactId,
+        locationId,
+        limit: 100
       });
       
-      const messages = response.data.messages || [];
+      console.log(`✅ Found ${conversations.length} conversations`);
       
-      if (messages.length > 0) {
-        allMessages = [...allMessages, ...messages];
-        lastMessageId = messages[messages.length - 1].id;
-        console.log(`📦 Fetched ${messages.length} messages (total: ${allMessages.length})`);
+      const conversationsWithMessages = [];
+      
+      for (const conv of conversations) {
+        console.log(`📨 Processing conversation: ${conv.id} (${conv.type})`);
+        
+        const messages = await this.getAllConversationMessages(conv.id, locationId);
+        
+        conversationsWithMessages.push({
+          id: conv.id,
+          type: conv.type,
+          createdAt: conv.createdAt,
+          lastMessageAt: conv.lastMessageAt,
+          lastMessageBody: conv.lastMessageBody,
+          lastMessageType: conv.lastMessageType,
+          lastMessageDirection: conv.lastMessageDirection,
+          unreadCount: conv.unreadCount || 0,
+          participants: conv.participants || [],
+          messageCount: messages.length,
+          messages: messages
+        });
       }
-
-      // Check if there might be more messages
-      hasMore = messages.length === pageSize;
+      
+      conversationsWithMessages.sort((a, b) => {
+        const dateA = a.lastMessageAt || a.createdAt;
+        const dateB = b.lastMessageAt || b.createdAt;
+        return new Date(dateB) - new Date(dateA);
+      });
+      
+      return {
+        contactId,
+        conversationCount: conversationsWithMessages.length,
+        conversations: conversationsWithMessages
+      };
+      
+    } catch (error) {
+      console.error('❌ Get contact conversations failed:', error.message);
+      throw error;
     }
-
-    console.log(`✅ Retrieved all ${allMessages.length} messages from conversation ${conversationId}`);
-    return allMessages;
-  } catch (error) {
-    console.error('❌ Get all conversation messages failed:', error.message);
-    if (error.response?.data) {
-      console.error('Error details:', error.response.data);
-    }
-    throw error;
   }
-}
 
   /**
    * Check if a conversation exists

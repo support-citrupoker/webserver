@@ -621,8 +621,8 @@ app.get('/test/ghl/comprehensive', async (req, res) => {
 });
 
 
-// Simple test route to get messages by phone number
-app.get('/test/ghl/messages-by-phone', async (req, res) => {
+// Simple test route to get all conversations for a phone number
+app.get('/test/ghl/phone-convos', async (req, res) => {
   try {
     const { phone } = req.query;
     
@@ -633,111 +633,64 @@ app.get('/test/ghl/messages-by-phone', async (req, res) => {
       });
     }
 
-    console.log(`\n📱 Getting messages for phone: ${phone}`);
+    console.log(`\n📱 Getting all conversations for: ${phone}`);
     
-    // ==================== STEP 1: Format phone number ====================
-    // Remove all non-numeric characters and add + for GHL
+    // ==================== STEP 1: Format phone ====================
     const cleanPhone = phone.replace(/\D/g, '');
     const formattedPhone = `+${cleanPhone}`;
-    console.log(`📞 Formatted phone: ${formattedPhone}`);
+    console.log(`📞 Formatted: ${formattedPhone}`);
 
-    // ==================== STEP 2: Find contact by phone ====================
-    console.log(`🔍 Searching for contact with phone: ${formattedPhone}`);
+    // ==================== STEP 2: Find contact ====================
     const contacts = await ghlService.searchContactsByPhone(formattedPhone);
     
     if (!contacts || contacts.length === 0) {
       return res.json({
         success: false,
         message: 'No contact found with this phone number',
-        phone: formattedPhone,
-        contacts: []
+        phone: formattedPhone
       });
     }
 
     const contact = contacts[0];
-    console.log(`✅ Found contact: ${contact.id} - ${contact.firstName || ''} ${contact.lastName || ''}`);
+    console.log(`✅ Contact: ${contact.id} - ${contact.firstName || ''} ${contact.lastName || ''}`);
 
-    // ==================== STEP 3: Get conversation for contact ====================
-    console.log(`💬 Getting conversation for contact: ${contact.id}`);
-    const { conversation } = await ghlService.getOrCreateConversation(
-      contact.id,
-      'SMS'
-    );
+    // ==================== STEP 3: Get all conversations ====================
+    const conversations = await ghlService.searchConversations({
+      contactId: contact.id,
+      limit: 50
+    });
 
-    console.log(`✅ Conversation ID: ${conversation.id}`);
+    console.log(`✅ Found ${conversations.length} conversations`);
 
-    // ==================== STEP 4: Get all messages ====================
-    console.log(`📋 Fetching all messages...`);
-    const messages = await ghlService.getAllConversationMessages(
-      conversation.id,
-      ghlService.locationId,
-      'TYPE_SMS,TYPE_CALL,TYPE_EMAIL,TYPE_INTERNAL_COMMENT'
-    );
-
-    console.log(`✅ Found ${messages.length} total messages`);
-
-    // ==================== STEP 5: Format messages for display ====================
-    const formattedMessages = messages.map(msg => ({
-      id: msg.id,
-      type: msg.type,
-      direction: msg.direction,
-      date: msg.date || msg.createdAt,
-      body: msg.body || msg.message || '(no content)',
-      from: msg.fromNumber || msg.from,
-      to: msg.toNumber || msg.to,
-      attachments: msg.attachments || []
-    }));
-
-    // Separate by type
-    const smsMessages = formattedMessages.filter(m => m.type === 'TYPE_SMS');
-    const internalComments = formattedMessages.filter(m => m.type === 'TYPE_INTERNAL_COMMENT');
-    const emails = formattedMessages.filter(m => m.type === 'TYPE_EMAIL');
-    const calls = formattedMessages.filter(m => m.type === 'TYPE_CALL');
-
-    // ==================== STEP 6: Return results ====================
+    // ==================== STEP 4: Return simple response ====================
     res.json({
       success: true,
-      timestamp: new Date().toISOString(),
-      query: {
-        original: phone,
-        formatted: formattedPhone
-      },
+      phone: formattedPhone,
       contact: {
         id: contact.id,
         name: `${contact.firstName || ''} ${contact.lastName || ''}`.trim() || 'Unknown',
         phone: contact.phone,
-        email: contact.email || 'No email',
-        tags: contact.tags || []
+        email: contact.email
       },
-      conversation: {
-        id: conversation.id
-      },
-      messages: {
-        total: messages.length,
-        byType: {
-          sms: smsMessages.length,
-          internalComments: internalComments.length,
-          emails: emails.length,
-          calls: calls.length
-        },
-        all: formattedMessages,
-        sms: smsMessages,
-        internalComments: internalComments,
-        emails: emails,
-        calls: calls
-      }
+      totalConversations: conversations.length,
+      conversations: conversations.map(c => ({
+        id: c.id,
+        type: c.type || 'SMS',
+        lastMessageAt: c.lastMessageAt,
+        lastMessageBody: c.lastMessageBody ? c.lastMessageBody.substring(0, 100) : null,
+        lastMessageDirection: c.lastMessageDirection,
+        unreadCount: c.unreadCount || 0
+      }))
     });
 
   } catch (error) {
     console.error('❌ Error:', error);
-    res.status(500).json({
-      success: false,
-      error: error.message,
-      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+    res.status(500).json({ 
+      success: false, 
+      error: error.message 
     });
   }
 });
-
 
 // Routes
 routes(app, tallbobService, ghlService, messageController)
