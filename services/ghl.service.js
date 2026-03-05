@@ -531,6 +531,7 @@ async getAllConversationMessages(conversationId, locationId = this.locationId, m
       const params = {
         conversationId: conversationId,
         limit: pageSize,
+        type: "TYPE_INTERNAL_COMMENTS"
       };
 
       // Add lastMessageId for pagination if we have it
