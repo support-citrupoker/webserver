@@ -514,7 +514,7 @@ class GHLService {
  * @param {string} messageTypes - Types of messages to fetch (default: all types)
  * @returns {Promise<Array>} Array of all messages
  */
-async getAllConversationMessages(conversationId, locationId = this.locationId, messageTypes = 'TYPE_SMS,TYPE_CALL,TYPE_EMAIL,TYPE_INTERNAL_COMMENTS') {
+async getAllConversationMessages(conversationId, locationId = this.locationId, messageTypes = 'TYPE_CALL, TYPE_SMS, TYPE_EMAIL, TYPE_FACEBOOK, TYPE_GMB, TYPE_INSTAGRAM, TYPE_WHATSAPP, TYPE_ACTIVITY_APPOINTMENT, TYPE_ACTIVITY_CONTACT, TYPE_ACTIVITY_INVOICE, TYPE_ACTIVITY_PAYMENT, TYPE_ACTIVITY_OPPORTUNITY, TYPE_LIVE_CHAT, TYPE_INTERNAL_COMMENTS, TYPE_ACTIVITY_EMPLOYEE_ACTION_LOG') {
   try {
     if (!locationId) throw new Error('locationId required');
     if (!conversationId) throw new Error('conversationId required');
