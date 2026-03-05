@@ -663,6 +663,9 @@ app.get('/test/ghl/phone-convos', async (req, res) => {
     console.log(`✅ Found ${conversations.length} conversations`);
 
     // ==================== STEP 4: Return simple response ====================
+
+    console.log(conversations[0])
+    
     res.json({
       success: true,
       phone: formattedPhone,
