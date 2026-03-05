@@ -13,7 +13,7 @@ class GHLService {
     // Also create an axios instance for direct calls
     this.apiVersion = process.env.GHL_API_VERSION || '2021-07-28';
     this.accessToken = process.env.GHL_PRIVATE_INTEGRATION_TOKEN;
-    this.baseURL = 'https://services.leadconnectorhq.com';
+    this.baseURL = 'https://services.leadconnectorhq.com'; 
     
     this.axios = axios.create({
       baseURL: this.baseURL,
@@ -508,13 +508,12 @@ class GHLService {
   }
 
  /**
- * Get ALL messages from a conversation (handles pagination automatically)
+ * Get ALL messages from a conversation using direct axios call (handles pagination automatically)
  * @param {string} conversationId - The conversation ID
  * @param {string} locationId - Location ID (optional)
- * @param {string} messageTypes - Types of messages to fetch (default: all types)
  * @returns {Promise<Array>} Array of all messages
  */
-async getAllConversationMessages(conversationId, locationId = this.locationId, messageTypes = 'TYPE_CALL, TYPE_SMS, TYPE_EMAIL, TYPE_FACEBOOK, TYPE_GMB, TYPE_INSTAGRAM, TYPE_WHATSAPP, TYPE_ACTIVITY_APPOINTMENT, TYPE_ACTIVITY_CONTACT, TYPE_ACTIVITY_INVOICE, TYPE_ACTIVITY_PAYMENT, TYPE_ACTIVITY_OPPORTUNITY, TYPE_LIVE_CHAT, TYPE_INTERNAL_COMMENTS, TYPE_ACTIVITY_EMPLOYEE_ACTION_LOG') {
+async getAllConversationMessages(conversationId, locationId = this.locationId) {
   try {
     if (!locationId) throw new Error('locationId required');
     if (!conversationId) throw new Error('conversationId required');
@@ -527,19 +526,22 @@ async getAllConversationMessages(conversationId, locationId = this.locationId, m
     const pageSize = 100; // Maximum allowed per page
 
     while (hasMore) {
-      // Build request parameters
-      const params = {
-        conversationId: conversationId
-      };
-
+      // Build URL with query parameters
+      let url = `/conversations/${conversationId}/messages?limit=${pageSize}`;
+      
       // Add lastMessageId for pagination if we have it
       if (lastMessageId) {
-        params.lastMessageId = lastMessageId;
+        url += `&lastMessageId=${lastMessageId}`;
       }
 
-      // Make the API call
-      const response = await this.client.conversations.getMessages(params);
-      const messages = response.messages || [];
+      // Make the API call using axios
+      const response = await this.axios.get(url, {
+        headers: {
+          'locationId': locationId
+        }
+      });
+      
+      const messages = response.data.messages || [];
       
       if (messages.length > 0) {
         allMessages = [...allMessages, ...messages];
@@ -555,9 +557,12 @@ async getAllConversationMessages(conversationId, locationId = this.locationId, m
     return allMessages;
   } catch (error) {
     console.error('❌ Get all conversation messages failed:', error.message);
+    if (error.response?.data) {
+      console.error('Error details:', error.response.data);
+    }
     throw error;
   }
-  }
+}
 
   /**
    * Check if a conversation exists
