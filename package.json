@@ -35,9 +35,12 @@
     "http": "^0.0.1-security",
     "mongoose": "^8.7.1",
     "morgan": "^1.10.0",
+    "node-cron": "^4.2.1",
+    "pg": "^8.20.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-router-dom": "^6.27.0",
+    "sqlite3": "^5.1.7",
     "sty": "^0.6.1"
   }
 }
