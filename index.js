@@ -74,17 +74,12 @@ app.use(helmet({
   contentSecurityPolicy: true
 }))
 
-<<<<<<< HEAD
-// ==================== API ENDPOINTS ====================
-
-=======
 try {
   await tallbobService.createWebhooks()
   await sleep(5)
 } catch (error) {
   console.log(error)
 }
->>>>>>> ae52c5165b41b335a2ca00eccb8e83a928b490cb
 // Test endpoints
 app.post('/api/send-and-sync', (req, res) => messageController.sendAndSync(req, res));
 app.get('/api/status/:messageId', (req, res) => messageController.getStatus(req, res));
@@ -142,16 +137,6 @@ app.get('/test/tallbob', async (req, res) => {
   console.log('Base URL:', tallbobService.baseURL);
 
   try {
-<<<<<<< HEAD
-    await tallbobService.createWebhook()
-    await sleep(5)
-  } catch (error) {
-    console.log(error)
-  }
-  
-  try {
-=======
->>>>>>> ae52c5165b41b335a2ca00eccb8e83a928b490cb
     const smsResult = await tallbobService.sendSMS({
       to: '61499000100',
       from: 'TestSender',
@@ -199,8 +184,6 @@ app.get('/test/tallbob', async (req, res) => {
       details: error.response?.data || null
     });
   }
-<<<<<<< HEAD
-=======
 
 })
 
@@ -766,7 +749,6 @@ app.get('/test/ghl/phone-convos', async (req, res) => {
       error: error.message 
     });
   }
->>>>>>> ae52c5165b41b335a2ca00eccb8e83a928b490cb
 });
 
 // Routes
