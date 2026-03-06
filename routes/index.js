@@ -1,6 +1,6 @@
 import { join } from 'path'
 
-// Simple in-memory cache for deduplication (use Redis/DB in production)
+// Simple in-memory cache for deduplication
 const processedEvents = new Set();
 const processedExpiry = new Map();
 
@@ -27,113 +27,113 @@ async function markEventProcessed(eventId) {
   processedExpiry.set(eventId, Date.now());
 }
 
-// Shared processing function for both SMS and MMS
-async function processIncomingMessage(messageData, type = 'SMS') {
-  // Skip if not a message received event
-  const validEvents = ['message_received', 'message_received_mms'];
-  if (!validEvents.includes(messageData.eventType)) {
-    console.log(`⏭️ Ignoring event type: ${messageData.eventType}`);
-    return;
-  }
+export default (app, tallbobService, ghlService) => {
 
-  // DEDUPLICATION: Check if we've already processed this eventID
-  const eventId = messageData.eventID || messageData.id;
-  if (eventId) {
-    const processed = await isEventProcessed(eventId);
-    if (processed) {
-      console.log(`⏭️ Event ${eventId} already processed, skipping`);
+  // Define processIncomingMessage INSIDE the export function so it has access to ghlService
+  async function processIncomingMessage(messageData, type = 'SMS') {
+    // Skip if not a message received event
+    const validEvents = ['message_received', 'message_received_mms'];
+    if (!validEvents.includes(messageData.eventType)) {
+      console.log(`⏭️ Ignoring event type: ${messageData.eventType}`);
       return;
     }
-  }
 
-  console.log(`📨 Processing ${type} message...`);
-
-  const {
-    recipient,
-    sentVia,
-    messageText,
-    timestamp,
-    contactID,
-    campaignID,
-    eventID,
-    reference,
-    media
-  } = messageData;
-
-  // Validate required fields
-  if (!recipient || !sentVia) {
-    console.error('❌ Missing required fields: recipient or sentVia');
-    return;
-  }
-
-  // Format phone numbers
-  const customerPhone = `+${recipient.replace(/\D/g, '')}`;
-  const tallbobNumber = `+${sentVia.replace(/\D/g, '')}`;
-  const locationId = ghlService.locationId;
-
-  if (!locationId) {
-    console.error('❌ No locationId configured');
-    return;
-  }
-
-  const receivedDate = timestamp ? new Date(timestamp * 1000).toISOString() : new Date().toISOString();
-
-  try {
-    // Find or create contact
-    console.log(`👤 Upserting contact with phone: ${customerPhone}`);
-    const { contact, action } = await ghlService.upsertContact({
-      phone: customerPhone,
-      firstName: 'Unknown',
-      lastName: 'Contact',
-      tags: ['tallbob_contact', type === 'MMS' ? 'mms_received' : 'sms_received'],
-      source: 'Tall Bob Integration',
-      customFields: [
-        { key: 'last_incoming_message', value: messageText || '' },
-        { key: 'last_message_date', value: receivedDate },
-        { key: 'tallbob_contact_id', value: contactID || '' },
-        { key: 'tallbob_campaign_id', value: campaignID || '' }
-      ]
-    }, locationId);
-
-    console.log(`✅ Contact ${action}: ${contact.id}`);
-
-    // Get or create conversation
-    console.log(`💬 Getting/creating conversation for contact: ${contact.id}`);
-    const { conversation } = await ghlService.getOrCreateConversation(
-      contact.id, 
-      type, 
-      locationId
-    );
-    console.log(`✅ Conversation: ${conversation.id}`);
-
-    // Add message to conversation
-    console.log(`📝 Adding ${type} message to conversation: ${conversation.id}`);
-    await ghlService.addMessageToConversation(conversation.id, {
-      contactId: contact.id,
-      body: messageText || (type === 'MMS' ? 'MMS message' : ''),
-      messageType: type,
-      mediaUrls: media ? (Array.isArray(media) ? media : [media]) : [],
-      direction: 'inbound',
-      date: receivedDate,
-      fromNumber: tallbobNumber,
-      toNumber: customerPhone,
-      providerMessageId: eventID || reference || eventId
-    }, locationId);
-
-    // Mark as processed
+    // DEDUPLICATION: Check if we've already processed this eventID
+    const eventId = messageData.eventID || messageData.id;
     if (eventId) {
-      await markEventProcessed(eventId);
+      const processed = await isEventProcessed(eventId);
+      if (processed) {
+        console.log(`⏭️ Event ${eventId} already processed, skipping`);
+        return;
+      }
     }
 
-    console.log(`✅ ${type} message processed for contact ${contact.id} (${action})`);
+    console.log(`📨 Processing ${type} message...`);
 
-  } catch (error) {
-    console.error(`❌ Error processing ${type} message:`, error);
-    // Don't mark as processed so it can be retried
+    const {
+      recipient,
+      sentVia,
+      messageText,
+      timestamp,
+      contactID,
+      campaignID,
+      eventID,
+      reference,
+      media
+    } = messageData;
+
+    // Validate required fields
+    if (!recipient || !sentVia) {
+      console.error('❌ Missing required fields: recipient or sentVia');
+      return;
+    }
+
+    // Format phone numbers
+    const customerPhone = `+${recipient.replace(/\D/g, '')}`;
+    const tallbobNumber = `+${sentVia.replace(/\D/g, '')}`;
+    const locationId = ghlService.locationId;  // Now ghlService is in scope
+
+    if (!locationId) {
+      console.error('❌ No locationId configured');
+      return;
+    }
+
+    const receivedDate = timestamp ? new Date(timestamp * 1000).toISOString() : new Date().toISOString();
+
+    try {
+      // Find or create contact
+      console.log(`👤 Upserting contact with phone: ${customerPhone}`);
+      const { contact, action } = await ghlService.upsertContact({
+        phone: customerPhone,
+        firstName: 'Unknown',
+        lastName: 'Contact',
+        tags: ['tallbob_contact', type === 'MMS' ? 'mms_received' : 'sms_received'],
+        source: 'Tall Bob Integration',
+        customFields: [
+          { key: 'last_incoming_message', value: messageText || '' },
+          { key: 'last_message_date', value: receivedDate },
+          { key: 'tallbob_contact_id', value: contactID || '' },
+          { key: 'tallbob_campaign_id', value: campaignID || '' }
+        ]
+      }, locationId);
+
+      console.log(`✅ Contact ${action}: ${contact.id}`);
+
+      // Get or create conversation
+      console.log(`💬 Getting/creating conversation for contact: ${contact.id}`);
+      const { conversation } = await ghlService.getOrCreateConversation(
+        contact.id, 
+        type, 
+        locationId
+      );
+      console.log(`✅ Conversation: ${conversation.id}`);
+
+      // Add message to conversation
+      console.log(`📝 Adding ${type} message to conversation: ${conversation.id}`);
+      await ghlService.addMessageToConversation(conversation.id, {
+        contactId: contact.id,
+        body: messageText || (type === 'MMS' ? 'MMS message' : ''),
+        messageType: type,
+        mediaUrls: media ? (Array.isArray(media) ? media : [media]) : [],
+        direction: 'inbound',
+        date: receivedDate,
+        fromNumber: tallbobNumber,
+        toNumber: customerPhone,
+        providerMessageId: eventID || reference || eventId
+      }, locationId);
+
+      // Mark as processed
+      if (eventId) {
+        await markEventProcessed(eventId);
+      }
+
+      console.log(`✅ ${type} message processed for contact ${contact.id} (${action})`);
+
+    } catch (error) {
+      console.error(`❌ Error processing ${type} message:`, error);
+      // Don't mark as processed so it can be retried
+    }
   }
-}
-
-export default (app, tallbobService, ghlService) => {
 
   // Health check
   app.get('/health', (req, res) => {
