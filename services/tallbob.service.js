@@ -1,27 +1,30 @@
+// services/tallbob.service.js
 import axios from 'axios';
 
 class TallBobService {
   constructor() {
-    // --- Configuration ---
-    // Your API username and key from Tall Bob settings
-    // IMPORTANT: Store these in your .env file, not in code!
+    // --- Configuration from environment variables ---
     this.apiUsername = process.env.TALLBOB_API_USERNAME;
     this.apiKey = process.env.TALLBOB_API_KEY;
+    this.tallbobPhoneNumber = process.env.TALLBOB_PHONE_NUMBER; // Your Tall Bob number
+    this.tallbobSenderName = process.env.TALLBOB_SENDER_NAME || 'TallBob'; // Alphanumeric sender ID
+    this.webhookBaseUrl = process.env.WEBHOOK_BASE_URL || 'https://cayked.store'; // Your webhook base URL
 
     if (!this.apiUsername || !this.apiKey) {
       console.error('❌ Missing Tall Bob API credentials in environment variables.');
-      // In a real app, you might throw an error or handle this more gracefully.
     }
-    const pass = `ZTRlNzU1MGMtMTA2YS0xMWYxLWIwMDAtMjM0YTI1YTI1MTFiOmYyNjc5ODZhNGFjZjk2MWE0ODQyYmRmOTcwYjY5ZThkYTBjZWM0MzZhNWVkMTE1N2Q4NTViNDExZWI4N2JjZGU=`
-    // Construct the Basic Auth header
+
+    if (!this.tallbobPhoneNumber) {
+      console.warn('⚠️ TALLBOB_PHONE_NUMBER not set. Using default for testing.');
+    }
+
+    // Construct the Basic Auth header from credentials (not hardcoded)
     const authString = `${this.apiUsername}:${this.apiKey}`;
     const base64Auth = Buffer.from(authString).toString('base64');
-    this.authHeader = `Basic ${pass}`;
+    this.authHeader = `Basic ${base64Auth}`;
 
-    // Set the base URL based on environment (from .env)
-    this.baseURL = process.env.NODE_ENV === 'production'
-      ? 'https://api.tallbob.com'  // Production base
-      : 'https://api.tallbob.com'; // Sandbox base
+    // Set the base URL (same for both environments as per docs)
+    this.baseURL = 'https://api.tallbob.com';
 
     // --- Axios Client Setup ---
     this.client = axios.create({
@@ -31,16 +34,14 @@ class TallBobService {
         'Content-Type': 'application/json',
         'Accept': 'application/json'
       },
-      maxBodyLength: Infinity // As per docs for larger requests
+      maxBodyLength: Infinity
     });
 
     // --- Request/Response Interceptors for Debugging ---
     this.client.interceptors.request.use(request => {
       console.log('📤 Tall Bob Request:', {
         method: request.method,
-        baseURL: request.baseURL,
-        url: request.url,
-        // Log data safely, maybe hide parts if needed
+        url: `${request.baseURL}${request.url}`,
         data: request.data
       });
       return request;
@@ -50,7 +51,6 @@ class TallBobService {
       response => {
         console.log('📥 Tall Bob Response:', {
           status: response.status,
-          statusText: response.statusText,
           data: response.data
         });
         return response;
@@ -58,11 +58,9 @@ class TallBobService {
       error => {
         console.error('❌ Tall Bob API Error:', {
           status: error.response?.status,
-          statusText: error.response?.statusText,
           data: error.response?.data,
           message: error.message
         });
-        // Return a rejected promise so the calling function can handle it
         return Promise.reject(error);
       }
     );
@@ -70,29 +68,20 @@ class TallBobService {
 
   /**
    * Format phone number to Tall Bob's expected format (E.164 without leading +).
-   * Examples: "61499000100", "12025550123"
-   * @param {string} phoneNumber - The phone number in various formats.
-   * @returns {string} Formatted phone number.
+   * Examples: "61499000100" (Australia), "237652251848" (Cameroon)
    */
   formatPhoneNumber(phoneNumber) {
+    if (!phoneNumber) return phoneNumber;
+    
     // Remove all non-numeric characters
     let cleaned = phoneNumber.replace(/\D/g, '');
 
-    // If it starts with '00', replace with the appropriate country code? 
-    // For simplicity, we assume it's either already in international format without '+'
-    // or it's a local number. This logic might need refinement based on your use case.
-    
-    // If the number starts with '0' (typical local format), assume Australia (61) and remove the leading 0.
+    // If it starts with '0', remove it (local format)
     if (cleaned.startsWith('0')) {
-        // Remove leading 0 and add 61 (Australia). 
-        // WARNING: This assumes all local numbers are Australian. Adjust for your region.
-        cleaned = '61' + cleaned.substring(1);
+      cleaned = cleaned.substring(1);
     }
     
-    // If the number doesn't start with a country code (e.g., 61, 1), you might need to add a default.
-    // This is a complex area; the safest is to ensure the calling code provides the number in the correct format.
-    
-    // Remove any '+' that might have been left.
+    // Remove any '+' that might have been left
     cleaned = cleaned.replace('+', '');
     
     return cleaned;
@@ -101,155 +90,171 @@ class TallBobService {
   /**
    * Send an SMS via Tall Bob.
    * POST /v2/sms/send
-   * @param {Object} params
-   * @param {string} params.to - Recipient phone number (E.164 without +, e.g., 61499000100).
-   * @param {string} params.message - The message content. Max 1570 chars. Include {OptOutURL} for marketing.
-   * @param {string} params.from - Sender ID (phone number or alphanumeric string, 11 chars max).
-   * @param {string} [params.reference] - Your unique reference for the message.
-   * @returns {Promise<Object>} Tall Bob API response.
    */
   async sendSMS({ to, message, from, reference }) {
     try {
+      // Use provided values or fall back to defaults
       const payload = {
-        to: '61428616133',
+        to: this.formatPhoneNumber(to),
         message: message,
-        from: '+61428616133',
-        reference: reference
+        from: from || this.tallbobPhoneNumber || this.tallbobSenderName,
+        reference: reference || `sms_${Date.now()}`
       };
 
       console.log(`📱 Sending SMS to ${payload.to}`);
       const response = await this.client.post('/v2/sms/send', payload);
       return response.data;
     } catch (error) {
-      console.error('Failed to send SMS via Tall Bob:', error.response?.data || error.message);
+      console.error('Failed to send SMS:', error.response?.data || error.message);
       throw new Error(`Tall Bob SMS send failed: ${error.message}`);
     }
   }
 
   /**
    * Send an MMS via Tall Bob.
-   * POST /v2/chat/send/mms
-   * @param {Object} params
-   * @param {string} params.to - Recipient phone number (E.164 without +).
-   * @param {string} params.message - The message content.
-   * @param {string} params.from - Sender ID.
-   * @param {string} params.mediaUrl - URL of the media file (image, video, etc.). Max 1500KB.
-   * @param {string} [params.reference] - Your unique reference.
-   * @returns {Promise<Object>} Tall Bob API response.
+   * POST /v2/mms/send
    */
-  async sendMMS({ to, message, from, mediaUrl, reference }) {
+  async sendMMS({ to, message, from, mediaUrl, subject, reference }) {
     try {
       const payload = {
-        to: '61428616133',
-        message: 'A picture is worth a thousand words...',
-        from: '+61428616133',
-        url: `https://picsum.photos/200/300.jpg`,
-        subject: "A walk in the park",
-        reference: reference
+        to: this.formatPhoneNumber(to),
+        message: message || 'Image message',
+        from: from || this.tallbobPhoneNumber || this.tallbobSenderName,
+        url: mediaUrl || 'https://picsum.photos/200/300.jpg', // Default test image
+        ...(subject && { subject }),
+        reference: reference || `mms_${Date.now()}`,
+        subject: subject || "Multimedia"
       };
 
-      console.log(`📸 Sending MMS to ${payload.to} with media`);
+      console.log(`📸 Sending MMS to ${payload.to}`);
       const response = await this.client.post('/v2/mms/send', payload);
       return response.data;
     } catch (error) {
-      console.error('Failed to send MMS via Tall Bob:', error.response?.data || error.message);
+      console.error('Failed to send MMS:', error.response?.data || error.message);
       throw new Error(`Tall Bob MMS send failed: ${error.message}`);
     }
   }
 
   /**
-   * Get the status of a message.
+   * Get message status
    * GET /v2/messages/{messageId}
-   * @param {string} messageId - The Tall Bob message ID.
-   * @returns {Promise<Object>} Message status.
    */
   async getMessageStatus(messageId) {
     try {
       console.log(`🔍 Getting status for message ID: ${messageId}`);
-      // IMPORTANT: Verify this exact endpoint with the docs or Tall Bob support.
-      // It might be /v2/messages/{messageId} or /v2/chat/status/{messageId}.
       const response = await this.client.get(`/v2/messages/${messageId}`);
       return response.data;
     } catch (error) {
-      console.error('Failed to get message status from Tall Bob:', error.response?.data || error.message);
+      console.error('Failed to get message status:', error.response?.data || error.message);
       throw new Error(`Tall Bob status check failed: ${error.message}`);
     }
   }
 
   /**
-   * Create a webhook to receive incoming messages and delivery receipts.
+   * Create webhooks for incoming messages
    * POST /v2/webhooks
-   * @param {Object} config
-   * @param {string} config.url - The URL where Tall Bob will send POST requests.
-   * @param {Array<string>} config.events - Events to listen for (e.g., ['message.received', 'message.delivered']).
-   * @returns {Promise<Object>} Webhook creation response.
    */
-  async createWebhook() {
-
+  async createWebhooks() {
     try {
-      var axios = require('axios');
-
-      var config = {
-        method: 'get',
-        maxBodyLength: Infinity,
-        url: 'https://api.tallbob.com/v2/webhooks',
-        headers: {
-          'Content-Type': 'application/json'
+      console.log('🔗 Creating Tall Bob webhooks...');
+      
+      // First, list existing webhooks to avoid duplicates
+      const existingWebhooks = await this.listWebhooks();
+      
+      const webhooksToCreate = [
+        {
+          url: `${this.webhookBaseUrl}/tallbob/incoming/sms`,
+          event_type: "message_received"
+        },
+        {
+          url: `${this.webhookBaseUrl}/tallbob/incoming/mms`,
+          event_type: "message_received_mms"
         }
-      };
+      ];
 
-      axios(config)
-        .then(function (response) {
-          console.log(JSON.stringify(response.data));
-        })
-        .catch(function (error) {
-          console.log(error);
-        });
+      const results = [];
 
-    } catch (err) {
+      for (const webhookConfig of webhooksToCreate) {
+        // Check if webhook already exists
+        const exists = existingWebhooks.some(
+          webhook => webhook.url === webhookConfig.url && 
+                     webhook.event_type === webhookConfig.event_type
+        );
 
-    }
-
-    try {
-      const payload = {
-        url: "https://cayked.store/tallbob/incoming/sms",
-        event_type: "message_received"
+        if (!exists) {
+          console.log(`Creating webhook for ${webhookConfig.event_type} at ${webhookConfig.url}`);
+          const response = await this.client.post('/v2/webhooks', webhookConfig);
+          results.push(response.data);
+        } else {
+          console.log(`Webhook for ${webhookConfig.event_type} already exists`);
+          results.push({ existing: true, ...webhookConfig });
+        }
       }
 
-      const payload2 = {
-        url: "https://cayked.store/tallbob/incoming/mms",
-        event_type: "message_received_mms"
-      }
-
-    
-
-      const response2 = await this.client.post('/v2/webhooks', payload2);
-      const response = await this.client.post('/v2/webhooks', payload);
-
-      return [response.data, response2.data]
+      return results;
     } catch (error) {
-      console.error('Failed to create Tall Bob webhook:', error.response?.data || error.message);
+      console.error('Failed to create Tall Bob webhooks:', error.response?.data || error.message);
       throw new Error(`Tall Bob webhook creation failed: ${error.message}`);
     }
   }
 
   /**
-   * Test the connection by sending a simple SMS to a known test number.
-   * @returns {Promise<Object>} Result of the connection test.
+   * List existing webhooks
+   * GET /v2/webhooks
+   */
+  async listWebhooks() {
+    try {
+      const response = await this.client.get('/v2/webhooks');
+      return response.data.webhooks || [];
+    } catch (error) {
+      console.error('Failed to list webhooks:', error.message);
+      return [];
+    }
+  }
+
+  /**
+   * Delete a webhook
+   * DELETE /v2/webhooks/{webhookId}
+   */
+  async deleteWebhook(webhookId) {
+    try {
+      const response = await this.client.delete(`/v2/webhooks/${webhookId}`);
+      return response.data;
+    } catch (error) {
+      console.error('Failed to delete webhook:', error.message);
+      throw error;
+    }
+  }
+
+  /**
+   * Test the connection
    */
   async testConnection() {
     try {
       console.log('🧪 Testing Tall Bob connection...');
-      const result = await this.sendSMS({
-        to: '61499000100', // Use the example number from docs for testing
-        from: 'TestSender', // Ensure this is a valid sender ID for your test account
-        message: 'Tall Bob integration connection test.',
-        reference: `conn_test_${Date.now()}`
-      });
-      return { success: true, data: result };
+      
+      // Try to list webhooks as a connection test
+      const webhooks = await this.listWebhooks();
+      
+      return { 
+        success: true, 
+        message: 'Tall Bob connection successful',
+        webhookCount: webhooks.length
+      };
     } catch (error) {
       return { success: false, error: error.message };
     }
+  }
+
+  /**
+   * Send a test SMS to a specific number
+   */
+  async sendTestSMS(to, message = 'Test message from integration') {
+    return this.sendSMS({
+      to,
+      message,
+      reference: `test_${Date.now()}`
+    });
   }
 }
 
