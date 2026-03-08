@@ -3,6 +3,7 @@ import { join } from 'path'
 // Simple in-memory cache for deduplication
 const processedEvents = new Set();
 const processedExpiry = new Map();
+const processingLock = new Set(); // Add a processing lock to prevent concurrent processing
 
 // Clean up old entries every hour
 setInterval(() => {
@@ -27,9 +28,26 @@ async function markEventProcessed(eventId) {
   processedExpiry.set(eventId, Date.now());
 }
 
+async function isEventProcessing(eventId) {
+  if (!eventId) return false;
+  return processingLock.has(eventId);
+}
+
+async function lockEvent(eventId) {
+  if (!eventId) return false;
+  if (processingLock.has(eventId)) return false;
+  processingLock.add(eventId);
+  return true;
+}
+
+async function unlockEvent(eventId) {
+  if (!eventId) return;
+  processingLock.delete(eventId);
+}
+
 export default (app, tallbobService, ghlService) => {
 
-  // Define processIncomingMessage INSIDE the export function so it has access to ghlService
+  // FIXED: processIncomingMessage function with better deduplication
   async function processIncomingMessage(messageData, type = 'SMS') {
     // Skip if not a message received event
     const validEvents = ['message_received', 'message_received_mms'];
@@ -39,16 +57,35 @@ export default (app, tallbobService, ghlService) => {
     }
 
     // DEDUPLICATION: Check if we've already processed this eventID
-    const eventId = messageData.eventID || messageData.id;
-    if (eventId) {
-      const processed = await isEventProcessed(eventId);
-      if (processed) {
-        console.log(`⏭️ Event ${eventId} already processed, skipping`);
-        return;
-      }
+    const eventId = messageData.eventID || messageData.id || 
+                    `${messageData.recipient}_${messageData.timestamp}`;
+    
+    if (!eventId) {
+      console.log('⚠️ No event ID found, using fallback');
     }
 
-    console.log(`📨 Processing ${type} message...`);
+    // Check if already processed
+    const processed = await isEventProcessed(eventId);
+    if (processed) {
+      console.log(`⏭️ Event ${eventId} already processed, skipping`);
+      return;
+    }
+
+    // Check if currently being processed by another request
+    const isLocked = await isEventProcessing(eventId);
+    if (isLocked) {
+      console.log(`⏭️ Event ${eventId} is currently being processed, skipping`);
+      return;
+    }
+
+    // Acquire processing lock
+    const locked = await lockEvent(eventId);
+    if (!locked) {
+      console.log(`⏭️ Could not acquire lock for event ${eventId}, skipping`);
+      return;
+    }
+
+    console.log(`📨 Processing ${type} message... Event ID: ${eventId}`);
 
     const {
       recipient,
@@ -65,16 +102,18 @@ export default (app, tallbobService, ghlService) => {
     // Validate required fields
     if (!recipient || !sentVia) {
       console.error('❌ Missing required fields: recipient or sentVia');
+      await unlockEvent(eventId);
       return;
     }
 
     // Format phone numbers
     const customerPhone = `+${recipient.replace(/\D/g, '')}`;
     const tallbobNumber = `+${sentVia.replace(/\D/g, '')}`;
-    const locationId = ghlService.locationId;  // Now ghlService is in scope
+    const locationId = ghlService.locationId;
 
     if (!locationId) {
       console.error('❌ No locationId configured');
+      await unlockEvent(eventId);
       return;
     }
 
@@ -122,16 +161,16 @@ export default (app, tallbobService, ghlService) => {
         providerMessageId: eventID || reference || eventId
       }, locationId);
 
-      // Mark as processed
-      if (eventId) {
-        await markEventProcessed(eventId);
-      }
-
+      // Mark as processed (only after successful processing)
+      await markEventProcessed(eventId);
       console.log(`✅ ${type} message processed for contact ${contact.id} (${action})`);
 
     } catch (error) {
       console.error(`❌ Error processing ${type} message:`, error);
       // Don't mark as processed so it can be retried
+    } finally {
+      // Always release the lock
+      await unlockEvent(eventId);
     }
   }
 
@@ -159,7 +198,6 @@ export default (app, tallbobService, ghlService) => {
       
     } catch (error) {
       console.error('❌ Error in SMS webhook:', error);
-      // Still return 200 to prevent Tall Bob from retrying
       res.status(200).json({ 
         received: true, 
         error: error.message,
@@ -187,7 +225,6 @@ export default (app, tallbobService, ghlService) => {
       
     } catch (error) {
       console.error('❌ Error in MMS webhook:', error);
-      // Still return 200 to prevent Tall Bob from retrying
       res.status(200).json({ 
         received: true, 
         error: error.message,
@@ -243,14 +280,12 @@ export default (app, tallbobService, ghlService) => {
         try {
           const targetLocationId = locationId || ghlService.locationId;
           
-          // Get or create conversation
           const { conversation } = await ghlService.getOrCreateConversation(
             contactId,
             mediaUrl ? 'MMS' : 'SMS',
             targetLocationId
           );
 
-          // Log message in GHL
           await ghlService.addMessageToConversation(conversation.id, {
             contactId: contactId,
             body: message,
@@ -266,7 +301,6 @@ export default (app, tallbobService, ghlService) => {
           console.log(`✅ Outbound message logged in GHL for contact ${contactId}`);
         } catch (ghlError) {
           console.error('⚠️ Failed to log message in GHL:', ghlError.message);
-          // Don't fail the main request if GHL logging fails
         }
       }
 
@@ -286,12 +320,13 @@ export default (app, tallbobService, ghlService) => {
     }
   })
 
-  // ==================== TEST ENDPOINT TO CHECK DEDUPLICATION ====================
+  // ==================== TEST ENDPOINTS ====================
   app.get('/test/deduplication-stats', (req, res) => {
     res.json({
       success: true,
       cacheSize: processedEvents.size,
-      events: Array.from(processedEvents).slice(-10) // Last 10 events
+      locksSize: processingLock.size,
+      events: Array.from(processedEvents).slice(-10)
     });
   });
 
