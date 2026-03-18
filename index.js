@@ -15,7 +15,6 @@ import TallBobService from './services/tallbob.service.js';
 import GHLService from './services/ghl.service.js';
 import CommentTracker from './services/tracker.service.js';
 import PollingService from './services/polling.service.js';
-import webhookRoutes from './routes/webhooks.js';
 import MessageController from './controllers/message.controller.js';
 import routes from './routes/index.js'
 
