@@ -180,6 +180,35 @@ export default (app, tallbobService, ghlService) => {
   })
 
   // ==================== INCOMING SMS FROM TALL BOB ====================
+
+  app.post('/ghl/incoming', async (req, res) => {
+    try {
+      const messageData = req.body;
+      console.log('📩 Received Tall Bob SMS webhook:', messageData);
+
+      console.log(messageData)
+      
+      // IMMEDIATELY acknowledge receipt to stop retries
+      res.status(200).json({ 
+        received: true, 
+        timestamp: new Date().toISOString() 
+      });
+      
+      // Process asynchronously after acknowledging
+      setImmediate(async () => {
+        //await processIncomingMessage(messageData, 'SMS');
+      });
+      
+    } catch (error) {
+      console.error('❌ Error in SMS webhook:', error);
+      res.status(200).json({ 
+        received: true, 
+        error: error.message,
+        timestamp: new Date().toISOString() 
+      });
+    }
+  })
+
   app.post('/tallbob/incoming/sms', async (req, res) => {
     try {
       const messageData = req.body;
