@@ -60,7 +60,7 @@ class GHLService {
   // ==================== CONTACT METHODS ====================
 
   /**
-   * Search contacts by phone number
+   * Search contacts by phone number or email
    */
   async searchContactsByPhone(phoneNumber, locationId = this.locationId) {
     try {
@@ -68,18 +68,20 @@ class GHLService {
         throw new Error('locationId is required');
       }
 
-      console.log(`🔍 Searching contact with phone: ${phoneNumber}`);
+      console.log(`🔍 Searching contact with identifier: ${phoneNumber}`);
 
-      const cleanPhone = phoneNumber.replace(/\D/g, '');
+      // Check if it's an email or phone
+      const isEmail = phoneNumber.includes('@');
+      const cleanIdentifier = isEmail ? phoneNumber.toLowerCase().trim() : phoneNumber.replace(/\D/g, '');
+      
+      const filters = isEmail 
+        ? [{ field: "email", operator: "contains", value: cleanIdentifier }]
+        : [{ field: "phone", operator: "contains", value: cleanIdentifier }];
       
       const response = await this.client.contacts.searchContactsAdvanced({
         locationId: locationId,
         pageLimit: 10,
-        filters: [{
-          field: "phone",
-          operator: "contains",
-          value: cleanPhone
-        }]
+        filters: filters
       });
 
       const contacts = response.contacts || [];
@@ -119,15 +121,25 @@ class GHLService {
     try {
       if (!locationId) throw new Error('locationId required');
 
-      const formattedPhone = this.formatPhoneForGHL(contactData.phone);
+      // Handle both phone and email for BlueBubbles
+      let formattedPhone = null;
+      let formattedEmail = null;
+      
+      if (contactData.phone) {
+        formattedPhone = this.formatPhoneForGHL(contactData.phone);
+      }
+      
+      if (contactData.email && contactData.email.trim() !== '') {
+        formattedEmail = contactData.email.toLowerCase().trim();
+      }
 
       const payload = {
         locationId: locationId,
         firstName: contactData.firstName || '',
         lastName: contactData.lastName || '',
         name: contactData.name || `${contactData.firstName || ''} ${contactData.lastName || ''}`.trim(),
-        phone: formattedPhone,
-        ...(contactData.email && contactData.email.trim() !== '' ? { email: contactData.email } : {}),
+        ...(formattedPhone ? { phone: formattedPhone } : {}),
+        ...(formattedEmail ? { email: formattedEmail } : {}),
         address1: contactData.address1 || '',
         city: contactData.city || '',
         state: contactData.state || '',
@@ -135,11 +147,12 @@ class GHLService {
         country: contactData.country || 'US',
         website: contactData.website || '',
         timezone: contactData.timezone || 'America/New_York',
-        tags: contactData.tags || ['tallbob_contact'],
-        source: contactData.source || 'Tall Bob Integration',
+        tags: contactData.tags || ['incoming_contact'],
+        source: contactData.source || 'Message Integration',
         customFields: contactData.customFields || []
       };
 
+      // Clean up undefined values
       Object.keys(payload).forEach(key => 
         payload[key] === undefined && delete payload[key]
       );
@@ -177,7 +190,7 @@ class GHLService {
       if (contactData.firstName) payload.firstName = contactData.firstName;
       if (contactData.lastName) payload.lastName = contactData.lastName;
       if (contactData.email && contactData.email.trim() !== '') payload.email = contactData.email;
-      if (contactData.phone) payload.phone = contactData.phone;
+      if (contactData.phone) payload.phone = this.formatPhoneForGHL(contactData.phone);
       if (contactData.tags && Array.isArray(contactData.tags)) payload.tags = contactData.tags;
       if (contactData.source) payload.source = contactData.source;
       if (contactData.customFields && Array.isArray(contactData.customFields)) {
@@ -205,13 +218,13 @@ class GHLService {
   }
 
   /**
-   * Create or update contact (upsert by phone)
+   * Create or update contact (upsert by phone or email)
    */
   async upsertContact(contactData, locationId = this.locationId) {
     try {
       if (!locationId) throw new Error('locationId required');
 
-      console.log(`🔄 Upserting contact with phone: ${contactData.phone}`);
+      console.log(`🔄 Upserting contact with identifier: ${contactData.phone || contactData.email}`);
 
       const result = await this.createContact(contactData, locationId);
       
@@ -232,7 +245,11 @@ class GHLService {
           customFields: [
             ...(existingContact.customFields || []),
             ...(contactData.customFields || [])
-          ]
+          ].reduce((acc, curr) => {
+            const existing = acc.find(f => f.key === curr.key);
+            if (!existing) acc.push(curr);
+            return acc;
+          }, [])
         };
 
         const updated = await this.updateContact(result.id, updateData, locationId);
@@ -248,14 +265,15 @@ class GHLService {
   }
 
   /**
-   * Check if a phone number exists
+   * Check if a contact exists by phone or email
    */
-  async phoneExists(phoneNumber, locationId = this.locationId) {
+  async contactExists(identifier, locationId = this.locationId) {
     try {
       if (!locationId) throw new Error('locationId required');
 
+      const isEmail = identifier.includes('@');
       const testContact = {
-        phone: phoneNumber,
+        ...(isEmail ? { email: identifier } : { phone: identifier }),
         firstName: 'Temp',
         lastName: 'Temp',
         tags: ['temp_check']
@@ -280,11 +298,11 @@ class GHLService {
   }
 
   /**
-   * Get contact by phone number
+   * Get contact by phone number or email
    */
-  async getContactByPhone(phoneNumber, locationId = this.locationId) {
+  async getContactByIdentifier(identifier, locationId = this.locationId) {
     try {
-      const result = await this.phoneExists(phoneNumber, locationId);
+      const result = await this.contactExists(identifier, locationId);
       
       if (result.exists && result.contactId) {
         return await this.getContact(result.contactId, locationId);
@@ -407,7 +425,7 @@ class GHLService {
       const response = await this.client.conversations.createConversation({
         contactId,
         locationId,
-        type
+        type: type === 'iMessage' ? 'SMS' : type // Map iMessage to SMS for GHL
       });
 
       return response.conversation || response;
@@ -441,24 +459,33 @@ class GHLService {
   }
 
   /**
-   * Add message to conversation - FIXED to handle attachments properly
+   * Add message to conversation - Enhanced for multiple providers
    */
   async addMessageToConversation(conversationId, messageData, locationId = this.locationId) {
     try {
       if (!locationId) throw new Error('locationId required');
       if (!messageData.contactId) throw new Error('contactId is required');
 
-      console.log(`📝 Adding message to conversation: ${conversationId}`);
+      console.log(`📝 Adding message to conversation: ${conversationId} (Provider: ${messageData.provider || 'Unknown'})`);
 
       // Build base payload
       const payload = {
-        type: messageData.messageType || 'SMS',
+        type: messageData.messageType === 'iMessage' ? 'SMS' : (messageData.messageType || 'SMS'),
         conversationId: conversationId,
         contactId: messageData.contactId,
-        message: messageData.body,
+        message: messageData.body || '',
         direction: messageData.direction || 'inbound',
         date: messageData.date || new Date().toISOString()
       };
+
+      // Add provider metadata to message for tracking
+      let fullMessage = payload.message;
+      if (messageData.provider && messageData.provider !== 'SMS') {
+        // Optionally add provider prefix for identification
+        // Uncomment if you want to see the provider in GHL
+        // fullMessage = `[${messageData.provider}] ${payload.message}`;
+      }
+      payload.message = fullMessage;
 
       // Only add attachments if they actually exist
       if (messageData.mediaUrls && messageData.mediaUrls.length > 0) {
@@ -468,6 +495,15 @@ class GHLService {
       // Add SMS-specific fields if provided
       if (messageData.fromNumber) payload.fromNumber = messageData.fromNumber;
       if (messageData.toNumber) payload.toNumber = messageData.toNumber;
+
+      // Add provider message ID as metadata (store in custom field if needed)
+      if (messageData.providerMessageId) {
+        payload.metadata = {
+          provider: messageData.provider || 'unknown',
+          providerMessageId: messageData.providerMessageId,
+          originalTimestamp: messageData.date
+        };
+      }
 
       console.log('Message payload:', JSON.stringify(payload, null, 2));
 
@@ -509,9 +545,6 @@ class GHLService {
 
   /**
    * Get ALL messages from a conversation using direct axios call (handles pagination automatically)
-   * @param {string} conversationId - The conversation ID
-   * @param {string} locationId - Location ID (optional)
-   * @returns {Promise<Array>} Array of all messages
    */
   async getAllConversationMessages(conversationId, locationId = this.locationId) {
     try {
@@ -562,17 +595,6 @@ class GHLService {
 
   /**
    * Search for conversations by contact ID and location ID
-   * @param {Object} options - Search options
-   * @param {string} options.contactId - The contact ID
-   * @param {string} options.locationId - Location ID (optional, uses default)
-   * @param {number} options.limit - Number of conversations to return (default: 20)
-   * @param {string} options.query - Search query string
-   * @param {string} options.sort - Sort order ('asc' or 'desc')
-   * @param {string} options.sortBy - Field to sort by (e.g., 'last_message_date')
-   * @param {string} options.lastMessageType - Filter by last message type
-   * @param {string} options.lastMessageDirection - Filter by direction ('inbound'/'outbound')
-   * @param {string} options.status - Conversation status
-   * @returns {Promise<Array>} Array of conversations
    */
   async searchConversations({ 
     contactId, 
@@ -624,9 +646,6 @@ class GHLService {
 
   /**
    * Get all conversations for a contact with their messages
-   * @param {string} contactId - The contact ID
-   * @param {string} locationId - Location ID (optional)
-   * @returns {Promise<Object>} Contact conversations with messages
    */
   async getContactConversationsWithMessages(contactId, locationId = this.locationId) {
     try {
@@ -725,6 +744,10 @@ class GHLService {
    */
   formatPhoneForGHL(phone) {
     if (!phone) return phone;
+    // If it's already in E.164 format with +, keep as is
+    if (phone.startsWith('+')) {
+      return phone;
+    }
     const cleaned = phone.replace(/\D/g, '');
     return `+${cleaned}`;
   }
