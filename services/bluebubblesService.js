@@ -16,7 +16,11 @@ class BlueBubblesService {
 
   async sendMessage({ to, from, message, effectId }) {
     try {
-      const payload = { text: message, to, from };
+      const payload = { 
+        text: message, 
+        to: to, 
+        from: from 
+      };
       if (effectId) payload.effectId = effectId;
       
       const response = await this.client.post('/api/v1/message/text', payload);
@@ -34,7 +38,12 @@ class BlueBubblesService {
 
   async sendAttachment({ to, from, message, mediaUrl, effectId }) {
     try {
-      const payload = { to, from, text: message || '', attachment: mediaUrl };
+      const payload = { 
+        to: to, 
+        from: from, 
+        text: message || '', 
+        attachment: mediaUrl 
+      };
       if (effectId) payload.effectId = effectId;
       
       const response = await this.client.post('/api/v1/message/attachment', payload);
@@ -47,36 +56,6 @@ class BlueBubblesService {
     } catch (error) {
       console.error('BlueBubbles attachment error:', error.response?.data || error.message);
       throw new Error(`Failed to send iMessage with attachment: ${error.message}`);
-    }
-  }
-
-  async sendToChat({ chatGuid, message, effectId }) {
-    try {
-      const response = await this.client.post(`/api/v1/chat/${chatGuid}/message`, {
-        text: message,
-        effectId
-      });
-      
-      return {
-        success: true,
-        guid: response.data.guid,
-        timestamp: response.data.timestamp
-      };
-    } catch (error) {
-      console.error('BlueBubbles chat send error:', error.response?.data || error.message);
-      throw new Error(`Failed to send iMessage to chat: ${error.message}`);
-    }
-  }
-
-  async sendTypingIndicator(chatGuid, isTyping = true) {
-    try {
-      const response = await this.client.post(`/api/v1/chat/${chatGuid}/typing`, {
-        typing: isTyping
-      });
-      return response.data;
-    } catch (error) {
-      console.error('Failed to send typing indicator:', error.message);
-      throw error;
     }
   }
 
@@ -101,7 +80,9 @@ class BlueBubblesService {
 
   async getChats(limit = 20) {
     try {
-      const response = await this.client.get('/api/v1/chats', { params: { limit } });
+      const response = await this.client.get('/api/v1/chats', { 
+        params: { limit } 
+      });
       return response.data;
     } catch (error) {
       console.error('Failed to fetch chats:', error.message);
