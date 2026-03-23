@@ -73,11 +73,17 @@ if (process.env.BLUEBUBBLES_SERVER_URL && process.env.BLUEBUBBLES_PASSWORD) {
 
 // Initialize tracker and polling service
 const commentTracker = new CommentTracker()
-const pollingService = new PollingService(ghlService, tallbobService, commentTracker, {
-  batchSize: 50,           // Check 50 contacts per poll
-  pollInterval: '*/30 * * * * *',  // Every 30 seconds
-  syncInterval: '0 */6 * * *'      // Sync contacts every 6 hours
-})
+const pollingService = new PollingService(
+  ghlService, 
+  tallbobService, 
+  commentTracker, 
+  bluebubblesService, // Pass BlueBubbles service
+  {
+    batchSize: 50,
+    pollInterval: '*/30 * * * * *',
+    syncInterval: '0 */6 * * *'
+  }
+);
 
 // Initialize controller with services
 const messageController = new MessageController(tallbobService, ghlService)
