@@ -5,6 +5,10 @@ const processedEvents = new Set();
 const processedExpiry = new Map();
 const processingLock = new Set();
 
+// iMessage cache to avoid repeated API calls
+const iMessageCache = new Map();
+const CACHE_DURATION = 7 * 24 * 60 * 60 * 1000; // 7 days
+
 // Clean up old entries every hour
 setInterval(() => {
   const now = Date.now();
@@ -14,7 +18,16 @@ setInterval(() => {
       processedExpiry.delete(id);
     }
   }
+  
+  // Clean up iMessage cache
+  for (const [phone, data] of iMessageCache.entries()) {
+    if (now - data.timestamp > CACHE_DURATION) {
+      iMessageCache.delete(phone);
+    }
+  }
+  
   console.log(`🧹 Cleaned up deduplication cache. Current size: ${processedEvents.size}`);
+  console.log(`📱 iMessage cache size: ${iMessageCache.size}`);
 }, 3600000);
 
 async function isEventProcessed(eventId) {
@@ -43,6 +56,24 @@ async function lockEvent(eventId) {
 async function unlockEvent(eventId) {
   if (!eventId) return;
   processingLock.delete(eventId);
+}
+
+// Helper function to get cached iMessage status
+async function getCachediMessageStatus(phone) {
+  const cached = iMessageCache.get(phone);
+  if (cached && Date.now() - cached.timestamp < CACHE_DURATION) {
+    return cached;
+  }
+  return null;
+}
+
+// Helper function to set cached iMessage status
+async function setCachediMessageStatus(phone, hasiMessage, service) {
+  iMessageCache.set(phone, {
+    hasiMessage,
+    service,
+    timestamp: Date.now()
+  });
 }
 
 export default (app, tallbobService, ghlService, messageController, bluebubblesService) => {
@@ -159,19 +190,76 @@ export default (app, tallbobService, ghlService, messageController, bluebubblesS
     const messageType = provider === 'BLUEBUBBLES' ? 'iMessage' : (provider === 'MMS' ? 'MMS' : 'SMS');
 
     try {
-      // Find or create contact
+      // ==================== iMESSAGE DETECTION ====================
+      let hasiMessage = false;
+      let imessageCheckFailed = false;
+      let imessageService = null;
+      
+      // Only check iMessage if BlueBubbles service is configured
+      if (bluebubblesService && customerPhone && !customerPhone.includes('@')) {
+        if (provider === 'BLUEBUBBLES') {
+          // BlueBubbles messages are already iMessages
+          hasiMessage = true;
+          imessageService = messageData.senderService || 'iMessage';
+          console.log(`✅ ${customerPhone} has iMessage (confirmed by incoming iMessage)`);
+          
+          // Cache the result
+          await setCachediMessageStatus(customerPhone, true, imessageService);
+        } else {
+          // Check if SMS contact has iMessage (check cache first)
+          const cached = await getCachediMessageStatus(customerPhone);
+          
+          if (cached !== null) {
+            hasiMessage = cached.hasiMessage;
+            imessageService = cached.service;
+            console.log(`📱 Using cached iMessage status for ${customerPhone}: ${hasiMessage ? 'YES ✅' : 'NO ❌'}`);
+          } else {
+            try {
+              console.log(`🔍 Checking iMessage availability for ${customerPhone}...`);
+              const availability = await bluebubblesService.checkiMessageAvailability(customerPhone);
+              hasiMessage = availability.hasiMessage;
+              imessageService = availability.service;
+              console.log(`📱 iMessage status for ${customerPhone}: ${hasiMessage ? 'YES ✅' : 'NO ❌'}`);
+              
+              // Cache the result
+              await setCachediMessageStatus(customerPhone, hasiMessage, imessageService);
+            } catch (error) {
+              console.error(`⚠️ iMessage check failed for ${customerPhone}:`, error.message);
+              imessageCheckFailed = true;
+            }
+          }
+        }
+      } else if (customerPhone && customerPhone.includes('@')) {
+        // Email addresses typically have iMessage
+        hasiMessage = true;
+        imessageService = 'iMessage (email)';
+        console.log(`📧 ${customerPhone} is an email address, assuming iMessage capability`);
+      }
+      
+      // Find or create contact with iMessage data
       console.log(`👤 Upserting contact with identifier: ${customerPhone}`);
       const contactData = {
         phone: customerPhone,
-        firstName: messageData.senderName || messageData.firstName || 'iMessage',
+        firstName: messageData.senderName || messageData.firstName || (provider === 'BLUEBUBBLES' ? 'iMessage' : 'SMS'),
         lastName: messageData.lastName || 'User',
-        tags: [`${provider.toLowerCase()}_contact`, provider === 'BLUEBUBBLES' ? 'imessage_received' : `${messageType.toLowerCase()}_received`],
+        tags: [
+          `${provider.toLowerCase()}_contact`,
+          provider === 'BLUEBUBBLES' ? 'imessage_received' : `${messageType.toLowerCase()}_received`,
+          // Add iMessage capability tags
+          ...(hasiMessage ? ['has_imessage', 'imessage_capable'] : ['sms_only']),
+          ...(imessageCheckFailed ? ['imessage_check_failed'] : [])
+        ],
         source: provider === 'BLUEBUBBLES' ? 'BlueBubbles Integration' : 'Tall Bob Integration',
         customFields: [
           { key: 'last_incoming_message', value: messageText || '' },
           { key: 'last_message_date', value: receivedDate },
           { key: `${provider.toLowerCase()}_contact_id`, value: contactID || '' },
           { key: `${provider.toLowerCase()}_campaign_id`, value: campaignID || '' },
+          // iMessage custom fields
+          { key: 'has_imessage', value: hasiMessage ? 'Yes' : 'No' },
+          { key: 'imessage_service', value: imessageService || 'unknown' },
+          { key: 'imessage_last_checked', value: new Date().toISOString() },
+          { key: 'imessage_check_failed', value: imessageCheckFailed ? 'true' : 'false' },
           ...(provider === 'BLUEBUBBLES' ? [{ key: 'imessage_guid', value: reference || '' }] : [])
         ]
       };
@@ -182,8 +270,21 @@ export default (app, tallbobService, ghlService, messageController, bluebubblesS
       }
       
       const { contact, action } = await ghlService.upsertContact(contactData, locationId);
-
       console.log(`✅ Contact ${action}: ${contact.id}`);
+      
+      // Add note about iMessage capability
+      if (hasiMessage || imessageCheckFailed) {
+        try {
+          const noteContent = hasiMessage 
+            ? `✅ iMessage capable detected on ${new Date().toISOString()}\nPhone: ${customerPhone}\nService: ${imessageService || 'iMessage'}`
+            : `⚠️ iMessage check failed on ${new Date().toISOString()}\nPhone: ${customerPhone}\nWill retry on next message`;
+          
+          await ghlService.addNote(contact.id, noteContent, locationId);
+          console.log(`📝 Added iMessage note to contact ${contact.id}`);
+        } catch (noteError) {
+          console.error('Failed to add iMessage note:', noteError.message);
+        }
+      }
 
       // Get or create conversation
       console.log(`💬 Getting/creating conversation for contact: ${contact.id}`);
@@ -225,8 +326,12 @@ export default (app, tallbobService, ghlService, messageController, bluebubblesS
           guid: reference,
           service: messageData.senderService || 'iMessage',
           isDelivered: messageData.isDelivered,
-          partCount: messageData.partCount
-        } : null
+          partCount: messageData.partCount,
+          hasiMessage: hasiMessage
+        } : {
+          hasiMessage: hasiMessage,
+          imessageChecked: !imessageCheckFailed
+        }
       };
       
       await ghlService.addMessageToConversation(conversation.id, messagePayload, locationId);
@@ -407,6 +512,156 @@ export default (app, tallbobService, ghlService, messageController, bluebubblesS
     }
   });
 
+  // ==================== iMESSAGE CHECK ENDPOINT ====================
+  
+  // Check iMessage availability for a phone number
+  app.get('/api/check-imessage/:phone', async (req, res) => {
+    try {
+      const { phone } = req.params;
+      
+      if (!phone) {
+        return res.status(400).json({ success: false, error: 'Phone number required' });
+      }
+      
+      if (!bluebubblesService) {
+        return res.status(400).json({ 
+          success: false, 
+          error: 'BlueBubbles service not configured' 
+        });
+      }
+      
+      const formattedPhone = phone.startsWith('+') ? phone : `+${phone.replace(/\D/g, '')}`;
+      
+      // Check cache first
+      const cached = await getCachediMessageStatus(formattedPhone);
+      if (cached) {
+        return res.json({
+          success: true,
+          phone: formattedPhone,
+          hasiMessage: cached.hasiMessage,
+          service: cached.service,
+          source: 'cache',
+          cachedAt: new Date(cached.timestamp).toISOString()
+        });
+      }
+      
+      // Check via BlueBubbles
+      const result = await bluebubblesService.checkiMessageAvailability(formattedPhone);
+      
+      // Cache the result
+      await setCachediMessageStatus(formattedPhone, result.hasiMessage, result.service);
+      
+      res.json({
+        success: true,
+        phone: formattedPhone,
+        hasiMessage: result.hasiMessage,
+        service: result.service,
+        source: 'api',
+        timestamp: new Date().toISOString()
+      });
+      
+    } catch (error) {
+      console.error('Error checking iMessage:', error);
+      res.status(500).json({ success: false, error: error.message });
+    }
+  });
+  
+  // Batch check multiple phone numbers
+  app.post('/api/check-imessage/batch', async (req, res) => {
+    try {
+      const { phones } = req.body;
+      
+      if (!phones || !Array.isArray(phones)) {
+        return res.status(400).json({ 
+          success: false, 
+          error: 'Please provide an array of phone numbers' 
+        });
+      }
+      
+      if (!bluebubblesService) {
+        return res.status(400).json({ 
+          success: false, 
+          error: 'BlueBubbles service not configured' 
+        });
+      }
+      
+      const results = [];
+      
+      for (const phone of phones) {
+        const formattedPhone = phone.startsWith('+') ? phone : `+${phone.replace(/\D/g, '')}`;
+        
+        // Check cache first
+        const cached = await getCachediMessageStatus(formattedPhone);
+        if (cached) {
+          results.push({
+            phone: formattedPhone,
+            hasiMessage: cached.hasiMessage,
+            service: cached.service,
+            source: 'cache'
+          });
+          continue;
+        }
+        
+        // Check via BlueBubbles
+        try {
+          const result = await bluebubblesService.checkiMessageAvailability(formattedPhone);
+          await setCachediMessageStatus(formattedPhone, result.hasiMessage, result.service);
+          results.push({
+            phone: formattedPhone,
+            hasiMessage: result.hasiMessage,
+            service: result.service,
+            source: 'api'
+          });
+        } catch (error) {
+          results.push({
+            phone: formattedPhone,
+            hasiMessage: false,
+            service: 'unknown',
+            source: 'error',
+            error: error.message
+          });
+        }
+        
+        // Small delay to avoid rate limiting
+        await new Promise(resolve => setTimeout(resolve, 200));
+      }
+      
+      res.json({
+        success: true,
+        results: results,
+        summary: {
+          total: results.length,
+          withiMessage: results.filter(r => r.hasiMessage).length,
+          withoutiMessage: results.filter(r => !r.hasiMessage && r.source !== 'error').length,
+          errors: results.filter(r => r.source === 'error').length
+        }
+      });
+      
+    } catch (error) {
+      console.error('Error batch checking iMessage:', error);
+      res.status(500).json({ success: false, error: error.message });
+    }
+  });
+  
+  // Get iMessage cache stats
+  app.get('/api/imessage-cache-stats', async (req, res) => {
+    const stats = {
+      size: iMessageCache.size,
+      entries: Array.from(iMessageCache.entries()).map(([phone, data]) => ({
+        phone,
+        hasiMessage: data.hasiMessage,
+        service: data.service,
+        cachedAt: new Date(data.timestamp).toISOString(),
+        expiresAt: new Date(data.timestamp + CACHE_DURATION).toISOString()
+      }))
+    };
+    
+    res.json({
+      success: true,
+      stats
+    });
+  });
+
   // ==================== TALL BOB WEBHOOK ROUTES ====================
 
   app.post('/tallbob/incoming/sms', async (req, res) => {
@@ -447,7 +702,7 @@ export default (app, tallbobService, ghlService, messageController, bluebubblesS
 
   app.post('/bluebubbles/send-message', async (req, res) => {
     try {
-      const { to, from, message, mediaUrl, contactId, locationId, conversationId, effectId } = req.body;
+      const { to, from, message, mediaUrl, contactId, locationId, conversationId, effectId, forceSMS } = req.body;
       console.log('📱 Send BlueBubbles iMessage request:', { to, from, message: message?.substring(0, 50), mediaUrl, contactId });
 
       if (!to || !from || !message) {
@@ -464,11 +719,68 @@ export default (app, tallbobService, ghlService, messageController, bluebubblesS
         });
       }
 
-      let result;
-      if (mediaUrl) {
-        result = await bluebubblesService.sendAttachment({ to, from, message, mediaUrl, effectId });
+      // Check iMessage availability if not forced to SMS
+      let useiMessage = false;
+      let routingReason = '';
+      
+      if (forceSMS) {
+        useiMessage = false;
+        routingReason = 'Forced SMS by request';
       } else {
-        result = await bluebubblesService.sendMessage({ to, from, message, effectId });
+        // Check if recipient has iMessage
+        const formattedTo = to.startsWith('+') ? to : `+${to.replace(/\D/g, '')}`;
+        const cached = await getCachediMessageStatus(formattedTo);
+        
+        if (cached) {
+          useiMessage = cached.hasiMessage;
+          routingReason = useiMessage ? 'Cached: Recipient has iMessage' : 'Cached: Recipient does not have iMessage';
+          console.log(`📱 Using cached iMessage status: ${useiMessage}`);
+        } else {
+          try {
+            const availability = await bluebubblesService.checkiMessageAvailability(formattedTo);
+            useiMessage = availability.hasiMessage;
+            routingReason = useiMessage ? 'API check: Recipient has iMessage' : 'API check: Recipient does not have iMessage';
+            await setCachediMessageStatus(formattedTo, useiMessage, availability.service);
+            console.log(`📱 API iMessage check: ${useiMessage}`);
+          } catch (error) {
+            console.error('iMessage check failed, falling back to SMS:', error.message);
+            useiMessage = false;
+            routingReason = 'iMessage check failed, falling back to SMS';
+          }
+        }
+      }
+      
+      console.log(`📱 Routing decision: ${useiMessage ? 'iMessage' : 'SMS'} - ${routingReason}`);
+      
+      let result;
+      if (useiMessage) {
+        // Send via iMessage (BlueBubbles)
+        if (mediaUrl) {
+          result = await bluebubblesService.sendAttachment({ to, from, message, mediaUrl, effectId });
+        } else {
+          result = await bluebubblesService.sendMessage({ to, from, message, effectId });
+        }
+        result.provider = 'BlueBubbles (iMessage)';
+      } else {
+        // Fallback to SMS via Tall Bob
+        const cleanFrom = from.replace(/[^0-9+]/g, '');
+        if (mediaUrl) {
+          result = await tallbobService.sendMMS({
+            to,
+            from: cleanFrom,
+            message,
+            mediaUrl,
+            reference: `ghl_${contactId || 'unknown'}_${Date.now()}`
+          });
+        } else {
+          result = await tallbobService.sendSMS({
+            to,
+            from: cleanFrom,
+            message,
+            reference: `ghl_${contactId || 'unknown'}_${Date.now()}`
+          });
+        }
+        result.provider = 'Tall Bob (SMS)';
       }
 
       // Log to GHL if we have contact info
@@ -496,27 +808,35 @@ export default (app, tallbobService, ghlService, messageController, bluebubblesS
               mediaUrls: mediaUrl ? [mediaUrl] : [],
               direction: 'outbound',
               date: new Date().toISOString(),
-              providerMessageId: result.guid,
+              providerMessageId: result.messageId || result.guid,
               fromNumber: from,
               toNumber: to,
-              provider: 'BlueBubbles'
+              provider: useiMessage ? 'BlueBubbles' : 'Tall Bob',
+              metadata: {
+                routing: routingReason,
+                imessageChecked: !forceSMS
+              }
             }, targetLocationId);
-            console.log(`✅ Outbound iMessage logged in GHL`);
+            console.log(`✅ Outbound message logged in GHL via ${useiMessage ? 'iMessage' : 'SMS'}`);
           }
         } catch (ghlError) {
-          console.error('⚠️ Failed to log iMessage in GHL:', ghlError.message);
+          console.error('⚠️ Failed to log message in GHL:', ghlError.message);
         }
       }
 
       res.json({
         success: true,
-        messageId: result.guid,
-        provider: 'BlueBubbles',
-        timestamp: new Date().toISOString()
+        messageId: result.messageId || result.guid,
+        provider: result.provider,
+        routing: {
+          used: useiMessage ? 'iMessage' : 'SMS',
+          reason: routingReason,
+          timestamp: new Date().toISOString()
+        }
       });
 
     } catch (error) {
-      console.error('❌ Error sending iMessage:', error);
+      console.error('❌ Error sending message:', error);
       res.status(500).json({ success: false, error: error.message });
     }
   });
@@ -612,7 +932,7 @@ export default (app, tallbobService, ghlService, messageController, bluebubblesS
       
       setImmediate(async () => {
         try {
-          const { contactId, locationId, message, to, from, mediaUrl, conversationId } = webhookData;
+          const { contactId, locationId, message, to, from, mediaUrl, conversationId, forceSMS } = webhookData;
           
           if (!to || !from || !message) {
             console.error('❌ Missing required fields in GHL webhook');
@@ -622,7 +942,7 @@ export default (app, tallbobService, ghlService, messageController, bluebubblesS
           const response = await fetch(`${process.env.APP_URL || 'http://localhost:3000'}/bluebubbles/send-message`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ to, from, message, mediaUrl, contactId, locationId, conversationId })
+            body: JSON.stringify({ to, from, message, mediaUrl, contactId, locationId, conversationId, forceSMS })
           });
           
           const result = await response.json();
