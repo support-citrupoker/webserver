@@ -71,20 +71,26 @@ if (process.env.BLUEBUBBLES_SERVER_URL && process.env.BLUEBUBBLES_PASSWORD) {
   console.log('⚠️ BlueBubbles service not initialized (missing config)')
 }
 
-// Initialize tracker and polling service
+// Initialize tracker
 const commentTracker = new CommentTracker()
 
+// Initialize polling service with both providers
 const pollingService = new PollingService(
   ghlService, 
   tallbobService, 
   commentTracker, 
-  bluebubblesService, // Pass BlueBubbles service
+  bluebubblesService,
   {
     batchSize: 50,
     pollInterval: '*/30 * * * * *',
-    syncInterval: '0 */6 * * *'
+    syncInterval: '0 */6 * * *',
+    delayBetweenContacts: 60000,      // 60 seconds between contacts
+    delayAfterRateLimit: 1800000,     // 30 minutes after rate limit
+    delayBetweenPolls: 300000,        // 5 minutes between polls
+    delayAfterError: 1800000,         // 30 minutes after error
+    delayBetweenPages: 120000         // 2 minutes between sync pages
   }
-);
+)
 
 // Initialize controller with services
 const messageController = new MessageController(tallbobService, ghlService)
@@ -820,8 +826,14 @@ app.use((err, req, res, next) => {
 // Initialize and start polling after server starts
 ;(async () => {
   try {
-    await pollingService.initialize()
-    console.log('✅ Polling service started')
+    // Check if pollingService has initialize method
+    if (typeof pollingService.initialize === 'function') {
+      await pollingService.initialize()
+      console.log('✅ Polling service initialized and started')
+    } else {
+      console.log('⚠️ Polling service has no initialize method, skipping...')
+      console.log('✅ Polling service ready (will run on schedule)')
+    }
   } catch (error) {
     console.error('❌ Failed to start polling service:', error)
   }
