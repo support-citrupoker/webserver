@@ -74,23 +74,43 @@ if (process.env.BLUEBUBBLES_SERVER_URL && process.env.BLUEBUBBLES_PASSWORD) {
 // Initialize tracker
 const commentTracker = new CommentTracker()
 
-// Initialize polling service with both providers
+// ==================== POLLING SERVICE CONFIGURATION ====================
+// OPTION 2: Balanced - 20 contacts every 12 minutes (~100 contacts/hour)
+// To get exactly 60 contacts/hour, use batchSize: 15 and pollInterval: '*/15 * * * *'
 const pollingService = new PollingService(
   ghlService, 
   tallbobService, 
   commentTracker, 
   bluebubblesService,
   {
-    batchSize: 50,
-    pollInterval: '*/30 * * * * *',
-    syncInterval: '0 */6 * * *',
-    delayBetweenContacts: 60000,      // 60 seconds between contacts
-    delayAfterRateLimit: 1800000,     // 30 minutes after rate limit
-    delayBetweenPolls: 300000,        // 5 minutes between polls
-    delayAfterError: 1800000,         // 30 minutes after error
-    delayBetweenPages: 120000         // 2 minutes between sync pages
+    // CORE SETTINGS
+    batchSize: 20,                      // 20 contacts per poll
+    delayBetweenContacts: 12000,        // 12 seconds between contacts
+    delayBetweenPolls: 240000,          // 4 minutes between polls
+    pollInterval: '*/12 * * * *',       // Every 12 minutes
+    
+    // SYNC SETTINGS (keep conservative)
+    syncBatchSize: 5,                   // Sync 5 contacts per page
+    syncInterval: '0 */6 * * *',        // Sync every 6 hours
+    delayBetweenPages: 120000,          // 2 minutes between sync pages
+    
+    // SAFETY SETTINGS
+    delayAfterRateLimit: 1800000,       // 30 minutes after rate limit
+    delayAfterError: 1800000,           // 30 minutes after error
   }
 )
+
+// Log polling configuration
+console.log('\n📊 POLLING SERVICE CONFIGURATION:')
+console.log(`   • Batch size: ${pollingService.batchSize} contacts/poll`)
+console.log(`   • Delay between contacts: ${pollingService.delayBetweenContacts/1000} seconds`)
+console.log(`   • Delay between polls: ${pollingService.delayBetweenPolls/60000} minutes`)
+console.log(`   • Poll interval: ${pollingService.pollInterval}`)
+console.log(`   • Expected polls per hour: ${Math.floor(60 / (parseInt(pollingService.pollInterval.split('/')[1]) || 12))}`)
+console.log(`   • Expected throughput: ~${pollingService.batchSize * Math.floor(60 / (parseInt(pollingService.pollInterval.split('/')[1]) || 12))} contacts/hour`)
+console.log(`   • Daily capacity: ~${pollingService.batchSize * Math.floor(60 / (parseInt(pollingService.pollInterval.split('/')[1]) || 12)) * 24} contacts/day`)
+console.log(`   • Sync interval: ${pollingService.syncInterval}`)
+console.log(`   • Sync batch size: ${pollingService.syncBatchSize} contacts/page\n`)
 
 // Initialize controller with services
 const messageController = new MessageController(tallbobService, ghlService)
@@ -827,12 +847,20 @@ app.use((err, req, res, next) => {
 ;(async () => {
   try {
     // Check if pollingService has initialize method
-    if (typeof pollingService.initialize === 'function') {
+    if (pollingService && typeof pollingService.initialize === 'function') {
       await pollingService.initialize()
       console.log('✅ Polling service initialized and started')
     } else {
-      console.log('⚠️ Polling service has no initialize method, skipping...')
-      console.log('✅ Polling service ready (will run on schedule)')
+      console.log('⚠️ Polling service has no initialize method, but will run on schedule')
+      // Start the polling schedule manually if initialize doesn't exist
+      if (pollingService && typeof pollingService.startPolling === 'function') {
+        pollingService.startPolling()
+        console.log('✅ Polling scheduler started manually')
+      }
+      if (pollingService && typeof pollingService.startContactSync === 'function') {
+        pollingService.startContactSync()
+        console.log('✅ Contact sync scheduler started manually')
+      }
     }
   } catch (error) {
     console.error('❌ Failed to start polling service:', error)
