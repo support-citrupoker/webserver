@@ -73,6 +73,7 @@ if (process.env.BLUEBUBBLES_SERVER_URL && process.env.BLUEBUBBLES_PASSWORD) {
 
 // Initialize tracker and polling service
 const commentTracker = new CommentTracker()
+
 const pollingService = new PollingService(
   ghlService, 
   tallbobService, 
