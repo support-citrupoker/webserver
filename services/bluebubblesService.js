@@ -1,9 +1,15 @@
+// services/bluebubblesService.js
 import axios from 'axios';
 
 class BlueBubblesService {
   constructor(serverUrl, password) {
     this.serverUrl = serverUrl;
     this.password = password;
+    
+    console.log('📱 BlueBubbles Service Initialized:');
+    console.log(`   Server URL: ${serverUrl}`);
+    console.log(`   Password: ${password ? '***' + password.slice(-4) : 'MISSING'}`);
+    
     this.client = axios.create({
       baseURL: serverUrl,
       headers: {
@@ -16,6 +22,12 @@ class BlueBubblesService {
 
   async sendMessage({ to, from, message, effectId }) {
     try {
+      console.log(`📱 Sending iMessage via BlueBubbles API:`);
+      console.log(`   To: ${to}`);
+      console.log(`   From: ${from}`);
+      console.log(`   Message: ${message?.substring(0, 100)}`);
+      console.log(`   Using password: ${this.password ? '***' + this.password.slice(-4) : 'MISSING'}`);
+      
       const payload = { 
         text: message, 
         to: to, 
@@ -25,6 +37,7 @@ class BlueBubblesService {
       
       const response = await this.client.post('/api/v1/message/text', payload);
       
+      console.log(`✅ iMessage sent! GUID: ${response.data.guid}`);
       return {
         success: true,
         guid: response.data.guid,
@@ -32,12 +45,20 @@ class BlueBubblesService {
       };
     } catch (error) {
       console.error('BlueBubbles send error:', error.response?.data || error.message);
+      console.error('   Status:', error.response?.status);
+      console.error('   Headers:', error.response?.headers);
       throw new Error(`Failed to send iMessage: ${error.message}`);
     }
   }
 
   async sendAttachment({ to, from, message, mediaUrl, effectId }) {
     try {
+      console.log(`📸 Sending iMessage with attachment via BlueBubbles API:`);
+      console.log(`   To: ${to}`);
+      console.log(`   From: ${from}`);
+      console.log(`   Media URL: ${mediaUrl}`);
+      console.log(`   Message: ${message?.substring(0, 100) || '(no text)'}`);
+      
       const payload = { 
         to: to, 
         from: from, 
@@ -48,6 +69,7 @@ class BlueBubblesService {
       
       const response = await this.client.post('/api/v1/message/attachment', payload);
       
+      console.log(`✅ iMessage with attachment sent! GUID: ${response.data.guid}`);
       return {
         success: true,
         guid: response.data.guid,
@@ -69,6 +91,7 @@ class BlueBubblesService {
         timestamp: new Date().toISOString()
       };
     } catch (error) {
+      console.error('BlueBubbles status error:', error.response?.data || error.message);
       return {
         connected: false,
         serverUrl: this.serverUrl,
