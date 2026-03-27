@@ -21,6 +21,9 @@ class PollingService {
     this.delayBetweenPages = options.delayBetweenPages || 120000;
     this.syncInterval = options.syncInterval || '0 0 * * *';
     
+    // NEW: Control initial sync delay (default to 0 for immediate sync)
+    this.initialSyncDelay = options.initialSyncDelay || 0;
+    
     // Status flags
     this.isPolling = false;
     this.isSyncing = false;
@@ -186,6 +189,7 @@ class PollingService {
     console.log(`   • Batch size: ${this.batchSize} contacts per poll`);
     console.log(`   • Sync interval: ${this.syncInterval}`);
     console.log(`   • Sync batch size: ${this.syncBatchSize} contacts per page`);
+    console.log(`   • Initial sync delay: ${this.initialSyncDelay/60000} minutes`);
     console.log(`===============================================\n`);
     
     console.log(`📊 Rate limit monitoring enabled`);
@@ -204,13 +208,21 @@ class PollingService {
     this.startContactSync();
     console.log('✅ Contact sync scheduler started');
     
-    setTimeout(() => {
-      console.log(`⏰ Delaying initial contact sync by 2 hours...`);
+    // FIXED: Run initial sync based on configured delay (default: immediate)
+    if (this.initialSyncDelay === 0) {
+      console.log(`🔄 Running initial contact sync IMMEDIATELY...`);
+      setImmediate(async () => {
+        await this.syncContacts().catch(console.error);
+      });
+    } else {
       setTimeout(() => {
-        console.log(`🔄 Running initial contact sync...`);
-        this.syncContacts().catch(console.error);
-      }, 7200000);
-    }, 1000);
+        console.log(`⏰ Delaying initial contact sync by ${this.initialSyncDelay/60000} minutes...`);
+        setTimeout(() => {
+          console.log(`🔄 Running initial contact sync...`);
+          this.syncContacts().catch(console.error);
+        }, this.initialSyncDelay);
+      }, 1000);
+    }
     
     setInterval(() => {
       const hourOfDay = new Date().getHours();
@@ -691,6 +703,7 @@ class PollingService {
       let page = 1;
       let hasMore = true;
       let totalAdded = 0;
+      const currentContactIds = new Set();
 
       while (hasMore && !this.isRateLimited()) {
         console.log(`📦 Fetching page ${page}...`);
@@ -709,6 +722,7 @@ class PollingService {
         for (const contact of contacts) {
           if (contact.phone) {
             await this.tracker.addContact(contact.id, contact.phone);
+            currentContactIds.add(contact.id);
             totalAdded++;
           }
         }
@@ -721,7 +735,24 @@ class PollingService {
         }
       }
       
-      console.log(`✅ SYNC COMPLETE: Added ${totalAdded} contacts`);
+      // NEW: Remove stale contacts that no longer exist in GHL
+      console.log(`\n🧹 Checking for stale contacts...`);
+      const allTrackedContacts = await this.tracker.getContactsToCheck(10000);
+      let staleRemoved = 0;
+      
+      for (const trackedContact of allTrackedContacts) {
+        if (!currentContactIds.has(trackedContact.contact_id)) {
+          console.log(`   🗑️ Removing stale contact: ${trackedContact.contact_id} (${trackedContact.phone_number})`);
+          await this.tracker.removeContact(trackedContact.contact_id);
+          staleRemoved++;
+        }
+      }
+      
+      const finalCount = await this.tracker.getCount();
+      console.log(`\n✅ SYNC COMPLETE:`);
+      console.log(`   • Contacts added: ${totalAdded}`);
+      console.log(`   • Stale removed: ${staleRemoved}`);
+      console.log(`   • Total in tracker: ${finalCount}`);
       
     } catch (error) {
       console.error(`❌ SYNC ERROR:`, error.message);
