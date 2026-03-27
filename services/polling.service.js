@@ -21,7 +21,7 @@ class PollingService {
     this.delayBetweenPages = options.delayBetweenPages || 120000;
     this.syncInterval = options.syncInterval || '0 0 * * *';
     
-    // NEW: Control initial sync delay (default to 0 for immediate sync)
+    // Control initial sync delay (default to 0 for immediate sync)
     this.initialSyncDelay = options.initialSyncDelay || 0;
     
     // Status flags
@@ -193,7 +193,7 @@ class PollingService {
     console.log(`===============================================\n`);
     
     console.log(`📊 Rate limit monitoring enabled`);
-    console.log(`🔄 Provider detection enabled`);
+    console.log(`🔄 Provider detection enabled (using contact tags)`);
     
     if (this.tracker && typeof this.tracker.initialize === 'function') {
       await this.tracker.initialize();
@@ -208,7 +208,7 @@ class PollingService {
     this.startContactSync();
     console.log('✅ Contact sync scheduler started');
     
-    // FIXED: Run initial sync based on configured delay (default: immediate)
+    // Run initial sync based on configured delay
     if (this.initialSyncDelay === 0) {
       console.log(`🔄 Running initial contact sync IMMEDIATELY...`);
       setImmediate(async () => {
@@ -293,10 +293,21 @@ class PollingService {
     });
   }
 
-  async getProviderForReply(contactId, locationId) {
+  async getProviderForReply(contactId, locationId, contactTags = []) {
     try {
       console.log(`🔍 [PROVIDER DETECTION] Contact: ${contactId}`);
+      console.log(`   Contact tags: ${contactTags.join(', ') || 'none'}`);
       
+      // STEP 1: Check tags first (no extra API call needed!)
+      const hasiMessageTag = contactTags.includes('has_imessage') || 
+                             contactTags.includes('imessage_capable');
+      
+      if (hasiMessageTag) {
+        console.log(`   ✅ Contact has iMessage tag - using BlueBubbles`);
+        return { provider: 'bluebubbles', reason: 'Contact has iMessage tag' };
+      }
+      
+      // STEP 2: Get conversations (need this to check message history)
       const conversations = await this.ghlService.searchConversations({
         contactId: contactId,
         limit: 5,
@@ -310,27 +321,22 @@ class PollingService {
         return { provider: 'tallbob', reason: 'No conversation history' };
       }
       
+      // STEP 3: Look for message history
       let lastProvider = null;
       let lastMessageDate = null;
       
       for (const conv of conversations) {
-        console.log(`   Checking conversation ${conv.id}`);
         const messages = await this.ghlService.getConversationMessages(conv.id, locationId, 10);
-        console.log(`      Found ${messages?.length || 0} messages`);
         
         if (messages && messages.length > 0) {
           const inboundMessages = messages
             .filter(m => m.direction === 'inbound')
             .sort((a, b) => new Date(b.date) - new Date(a.date));
           
-          console.log(`      Inbound messages: ${inboundMessages.length}`);
-          
           if (inboundMessages.length > 0) {
             const latestMessage = inboundMessages[0];
             const messageDate = new Date(latestMessage.date);
             const provider = latestMessage.provider || this.detectProviderFromMessage(latestMessage);
-            
-            console.log(`      Latest inbound: ${messageDate.toLocaleString()} - Provider: ${provider}`);
             
             if (!lastMessageDate || messageDate > lastMessageDate) {
               lastMessageDate = messageDate;
@@ -340,15 +346,28 @@ class PollingService {
         }
       }
       
-      console.log(`   📱 Last provider detected: ${lastProvider || 'none'}`);
-      
+      // STEP 4: Decision based on message history
       if (lastProvider === 'BlueBubbles' || lastProvider === 'iMessage') {
-        console.log(`   ✅ Replying via BlueBubbles (iMessage)`);
+        console.log(`   ✅ Replying via BlueBubbles (iMessage) - based on message history`);
         return { provider: 'bluebubbles', reason: 'Last message was iMessage' };
-      } else {
-        console.log(`   ✅ Replying via Tall Bob (SMS/MMS)`);
+      }
+      
+      if (lastProvider === 'Tall Bob' || lastProvider === 'SMS' || lastProvider === 'MMS') {
+        console.log(`   ✅ Replying via Tall Bob (SMS/MMS) - based on message history`);
         return { provider: 'tallbob', reason: 'Last message was SMS/MMS' };
       }
+      
+      // STEP 5: Check conversation type
+      for (const conv of conversations) {
+        if (conv.type === 'iMessage' || conv.type?.toLowerCase().includes('imessage')) {
+          console.log(`   ✅ Replying via BlueBubbles (iMessage) - conversation type is iMessage`);
+          return { provider: 'bluebubbles', reason: 'Conversation type is iMessage' };
+        }
+      }
+      
+      // STEP 6: Final fallback to SMS
+      console.log(`   ⚠️ Defaulting to Tall Bob (SMS) - no iMessage indicators found`);
+      return { provider: 'tallbob', reason: 'Defaulting to SMS' };
       
     } catch (error) {
       console.error(`   ❌ Error determining provider:`, error.message);
@@ -364,15 +383,16 @@ class PollingService {
     return 'unknown';
   }
   
-  async sendReplyWithProvider(contact, replyText, imageUrl, locationId) {
+  async sendReplyWithProvider(contact, replyText, imageUrl, locationId, contactTags = []) {
     try {
       console.log(`\n📤 ===== SENDING REPLY =====`);
       console.log(`   Contact ID: ${contact.contact_id}`);
       console.log(`   Phone: ${contact.phone_number}`);
       console.log(`   Message: "${replyText.substring(0, 100)}"`);
       console.log(`   Image: ${imageUrl ? 'Yes (' + imageUrl + ')' : 'No'}`);
+      console.log(`   Tags: ${contactTags.join(', ') || 'none'}`);
       
-      const { provider, reason } = await this.getProviderForReply(contact.contact_id, locationId);
+      const { provider, reason } = await this.getProviderForReply(contact.contact_id, locationId, contactTags);
       
       console.log(`   Routing: ${provider.toUpperCase()} - ${reason}`);
       
@@ -535,6 +555,16 @@ class PollingService {
         try {
           console.log(`\n--- Contact ${processedCount + 1}/${contacts.length}: ${contact.phone_number} (ID: ${contact.contact_id}) ---`);
           
+          // Get contact tags (one API call per contact - unavoidable but necessary)
+          let contactTags = [];
+          try {
+            const ghlContact = await this.ghlService.getContact(contact.contact_id);
+            contactTags = ghlContact.tags || [];
+            console.log(`   Tags: ${contactTags.join(', ') || 'none'}`);
+          } catch (err) {
+            console.log(`   Could not fetch contact tags: ${err.message}`);
+          }
+          
           this.trackApiCall('searchConversations', 'searchConversations');
           
           console.log(`   STEP 2: Searching GHL conversations...`);
@@ -614,7 +644,8 @@ class PollingService {
                   contact,
                   replyText,
                   imageUrl,
-                  process.env.GHL_LOCATION_ID
+                  process.env.GHL_LOCATION_ID,
+                  contactTags
                 );
                 
                 console.log(`   ✅ Reply sent successfully via ${sendResult.provider.toUpperCase()}`);
@@ -639,7 +670,7 @@ class PollingService {
           errorCount++;
           console.error(`\n❌ ERROR processing contact ${contact.contact_id}:`);
           console.error(`   Error: ${err.message}`);
-          console.error(`   Stack: ${err.stack}`);
+          if (err.stack) console.error(`   Stack: ${err.stack}`);
           this.stats.errors++;
           this.consecutiveErrors++;
           
@@ -684,7 +715,7 @@ class PollingService {
     } catch (error) {
       console.error(`\n💥💥💥 POLLING FATAL ERROR 💥💥💥`);
       console.error(`   Error: ${error.message}`);
-      console.error(`   Stack: ${error.stack}`);
+      if (error.stack) console.error(`   Stack: ${error.stack}`);
       this.stats.errors++;
       this.lastErrorTime = Date.now();
     } finally {
@@ -735,7 +766,7 @@ class PollingService {
         }
       }
       
-      // NEW: Remove stale contacts that no longer exist in GHL
+      // Remove stale contacts that no longer exist in GHL
       console.log(`\n🧹 Checking for stale contacts...`);
       const allTrackedContacts = await this.tracker.getContactsToCheck(10000);
       let staleRemoved = 0;
