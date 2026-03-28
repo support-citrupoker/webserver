@@ -316,9 +316,6 @@ class PollingService {
     });
   }
 
-  /**
-   * Parse the internal comment to extract provider command and clean message
-   */
   parseInternalComment(comment) {
     const trimmedComment = comment?.trim() || '';
     const lowerComment = trimmedComment.toLowerCase();
@@ -342,9 +339,6 @@ class PollingService {
     };
   }
 
-  /**
-   * Determine which provider to use for a reply
-   */
   async getProviderForReply(contactId, locationId, contactTags = [], forcedProvider = null) {
     try {
       console.log(`🔍 [PROVIDER DETECTION] Contact: ${contactId}`);
@@ -398,11 +392,15 @@ class PollingService {
         if (messagesArray && messagesArray.length > 0) {
           const inboundMessages = messagesArray
             .filter(m => m.direction === 'inbound')
-            .sort((a, b) => new Date(b.date) - new Date(a.date));
+            .sort((a, b) => {
+              const dateA = this.extractDateFromMessage(a);
+              const dateB = this.extractDateFromMessage(b);
+              return dateB - dateA;
+            });
           
           if (inboundMessages.length > 0) {
             const latestMessage = inboundMessages[0];
-            const messageDate = new Date(latestMessage.date);
+            const messageDate = this.extractDateFromMessage(latestMessage);
             const provider = latestMessage.provider || this.detectProviderFromMessage(latestMessage);
             
             if (!lastMessageDate || messageDate > lastMessageDate) {
@@ -437,6 +435,27 @@ class PollingService {
       console.error(`   ❌ Error determining provider:`, error.message);
       return { provider: 'tallbob', reason: 'Error, defaulting to SMS' };
     }
+  }
+  
+  extractDateFromMessage(message) {
+    // Try all possible date field names
+    const possibleFields = [
+      'date', 'createdAt', 'created_at', 'timestamp', 'sentDate', 
+      'messageDate', 'dateCreated', 'dateSent', 'time', 'updatedAt',
+      'lastMessageAt', 'lastMessageDate', 'sentAt', 'receivedAt'
+    ];
+    
+    for (const field of possibleFields) {
+      if (message[field]) {
+        const date = new Date(message[field]);
+        if (!isNaN(date.getTime())) {
+          return date;
+        }
+      }
+    }
+    
+    // If no date found, return epoch (very old)
+    return new Date(0);
   }
   
   detectProviderFromMessage(message) {
@@ -861,6 +880,7 @@ class PollingService {
       
       console.log(`📅 Cutoff date: ${cutoffDate.toLocaleDateString()}`);
       console.log(`📅 Current date: ${new Date().toLocaleDateString()}`);
+      console.log(`📅 Cutoff timestamp: ${cutoffTimestamp}`);
       
       while (hasMore && !this.isRateLimited()) {
         console.log(`\n📦 Fetching page ${page}...`);
@@ -876,6 +896,12 @@ class PollingService {
         const contacts = response.contacts || [];
         console.log(`   Received ${contacts.length} total contacts`);
         
+        // DEBUG: Log first contact's fields to see what's available
+        if (contacts.length > 0 && page === 1) {
+          console.log(`\n   🔍 DEBUG - First contact fields: ${Object.keys(contacts[0]).join(', ')}`);
+          console.log(`   🔍 DEBUG - First contact preview:`, JSON.stringify(contacts[0], null, 2).substring(0, 500));
+        }
+        
         for (const contact of contacts) {
           if (!contact.phone) {
             noPhoneCount++;
@@ -883,25 +909,39 @@ class PollingService {
           }
           
           console.log(`\n   📍 Processing contact: ${contact.id} (${contact.phone})`);
+          console.log(`      Contact fields: ${Object.keys(contact).join(', ')}`);
           console.log(`      Contact lastMessageDate: ${contact.lastMessageDate || 'none'}`);
+          console.log(`      Contact lastActivityDate: ${contact.lastActivityDate || 'none'}`);
+          console.log(`      Contact updatedAt: ${contact.updatedAt || 'none'}`);
           
           let isActive = false;
           let lastActivity = null;
           
-          // Method 1: Check contact.lastMessageDate
-          if (contact.lastMessageDate) {
-            const lastMsgDate = new Date(contact.lastMessageDate);
-            console.log(`      Checking lastMessageDate: ${lastMsgDate.toISOString()}`);
-            if (lastMsgDate.getTime() >= cutoffTimestamp) {
-              isActive = true;
-              lastActivity = lastMsgDate;
-              console.log(`      ✅ ACTIVE via lastMessageDate`);
+          // Try all possible date fields from contact
+          const possibleContactDateFields = [
+            'lastMessageDate', 'lastActivityDate', 'lastSeen', 'updatedAt', 
+            'createdAt', 'lastMessageAt', 'lastMessageTimestamp'
+          ];
+          
+          for (const field of possibleContactDateFields) {
+            if (contact[field]) {
+              const fieldDate = new Date(contact[field]);
+              if (!isNaN(fieldDate.getTime())) {
+                console.log(`      Found date in field '${field}': ${fieldDate.toISOString()}`);
+                if (fieldDate.getTime() >= cutoffTimestamp) {
+                  isActive = true;
+                  lastActivity = fieldDate;
+                  console.log(`      ✅ ACTIVE via contact.${field}`);
+                  break;
+                }
+              }
             }
           }
           
-          // Method 2: Check conversations and their messages
+          // Method 2: Check conversations and their messages if not already active
           if (!isActive) {
             try {
+              console.log(`      🔍 Checking conversations for activity...`);
               const conversations = await this.ghlService.searchConversations({
                 contactId: contact.id,
                 limit: 5,
@@ -909,13 +949,30 @@ class PollingService {
               });
               
               if (conversations && conversations.length > 0) {
+                console.log(`      Found ${conversations.length} conversations`);
                 let latestMessageDate = null;
                 
                 for (const conv of conversations) {
+                  console.log(`      📨 Checking conversation: ${conv.id}`);
+                  console.log(`         Conversation fields: ${Object.keys(conv).join(', ')}`);
+                  console.log(`         Conversation lastMessageAt: ${conv.lastMessageAt || 'none'}`);
+                  
+                  // Try conversation lastMessageAt
+                  if (conv.lastMessageAt) {
+                    const convDate = new Date(conv.lastMessageAt);
+                    if (!isNaN(convDate.getTime())) {
+                      console.log(`         Found lastMessageAt: ${convDate.toISOString()}`);
+                      if (!latestMessageDate || convDate > latestMessageDate) {
+                        latestMessageDate = convDate;
+                      }
+                    }
+                  }
+                  
+                  // Get messages for more accurate date
                   const messagesResponse = await this.ghlService.getConversationMessages(
                     conv.id, 
                     process.env.GHL_LOCATION_ID, 
-                    10
+                    5
                   );
                   
                   let messagesArray = [];
@@ -928,30 +985,25 @@ class PollingService {
                   }
                   
                   if (messagesArray && messagesArray.length > 0) {
+                    console.log(`         Found ${messagesArray.length} messages`);
+                    if (messagesArray.length > 0) {
+                      console.log(`         First message fields: ${Object.keys(messagesArray[0]).join(', ')}`);
+                    }
+                    
                     for (const msg of messagesArray) {
-                      // Try to find date in different possible fields
-                      let msgDate = null;
-                      if (msg.date) {
-                        msgDate = new Date(msg.date);
-                      } else if (msg.createdAt) {
-                        msgDate = new Date(msg.createdAt);
-                      } else if (msg.created_at) {
-                        msgDate = new Date(msg.created_at);
-                      } else if (msg.timestamp) {
-                        msgDate = new Date(msg.timestamp);
-                      } else if (msg.sentDate) {
-                        msgDate = new Date(msg.sentDate);
-                      }
-                      
-                      if (msgDate && (!latestMessageDate || msgDate > latestMessageDate)) {
-                        latestMessageDate = msgDate;
+                      const msgDate = this.extractDateFromMessage(msg);
+                      if (msgDate.getTime() > 0) {
+                        console.log(`         Message date: ${msgDate.toISOString()}`);
+                        if (!latestMessageDate || msgDate > latestMessageDate) {
+                          latestMessageDate = msgDate;
+                        }
                       }
                     }
                   }
                 }
                 
                 if (latestMessageDate) {
-                  console.log(`      Latest message date: ${latestMessageDate.toISOString()}`);
+                  console.log(`      📅 Latest message date: ${latestMessageDate.toISOString()}`);
                   if (latestMessageDate.getTime() >= cutoffTimestamp) {
                     isActive = true;
                     lastActivity = latestMessageDate;
@@ -960,7 +1012,7 @@ class PollingService {
                     console.log(`      ❌ INACTIVE - last message too old (${latestMessageDate.toLocaleDateString()})`);
                   }
                 } else {
-                  console.log(`      ⚠️ No message dates found`);
+                  console.log(`      ⚠️ No valid message dates found`);
                 }
               } else {
                 console.log(`      ⚠️ No conversations found`);
@@ -968,6 +1020,8 @@ class PollingService {
             } catch (convError) {
               errorCount++;
               console.log(`      ⚠️ Error checking conversations: ${convError.message}`);
+              // On error, assume active to be safe
+              isActive = true;
             }
           }
           
@@ -981,10 +1035,10 @@ class PollingService {
             currentContactIds.add(contact.id);
             totalAdded++;
             activeCount++;
-            console.log(`   ✅ ADDED ACTIVE: ${contact.id}`);
+            console.log(`   ✅ ADDED ACTIVE: ${contact.id} (${contact.phone})`);
           } else {
             inactiveCount++;
-            console.log(`   ❌ SKIPPED INACTIVE: ${contact.id}`);
+            console.log(`   ❌ SKIPPED INACTIVE: ${contact.id} (${contact.phone})`);
           }
         }
         
@@ -1016,6 +1070,7 @@ class PollingService {
       
     } catch (error) {
       console.error(`❌ ACTIVE CONTACT SYNC ERROR:`, error.message);
+      console.error(error.stack);
     }
   }
 
