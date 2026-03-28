@@ -326,11 +326,9 @@ class PollingService {
     let forcedProvider = null;
     let cleanMessage = trimmedComment;
     
-    // Check for provider commands
     for (const [command, provider] of Object.entries(this.providerCommands)) {
       if (lowerComment.startsWith(command)) {
         forcedProvider = provider;
-        // Remove the command from the message
         cleanMessage = trimmedComment.substring(command.length).trim();
         console.log(`   🎯 Provider command detected: ${command} -> using ${provider.toUpperCase()}`);
         break;
@@ -352,7 +350,6 @@ class PollingService {
       console.log(`🔍 [PROVIDER DETECTION] Contact: ${contactId}`);
       console.log(`   Contact tags: ${contactTags.join(', ') || 'none'}`);
       
-      // STEP 1: Check forced provider from command
       if (forcedProvider) {
         console.log(`   🎯 Using forced provider from command: ${forcedProvider.toUpperCase()}`);
         if (forcedProvider === 'bluebubbles') {
@@ -362,7 +359,6 @@ class PollingService {
         }
       }
       
-      // STEP 2: Check tags for iMessage capability
       const hasiMessageTag = contactTags.includes('has_imessage') || 
                              contactTags.includes('imessage_capable');
       
@@ -371,7 +367,6 @@ class PollingService {
         return { provider: 'bluebubbles', reason: 'Contact has iMessage tag' };
       }
       
-      // STEP 3: Check conversation history
       const conversations = await this.ghlService.searchConversations({
         contactId: contactId,
         limit: 5,
@@ -385,14 +380,12 @@ class PollingService {
         return { provider: 'tallbob', reason: 'No conversation history' };
       }
       
-      // Look for message history
       let lastProvider = null;
       let lastMessageDate = null;
       
       for (const conv of conversations) {
         const messages = await this.ghlService.getConversationMessages(conv.id, locationId, 10);
         
-        // Handle different response formats
         let messagesArray = [];
         if (Array.isArray(messages)) {
           messagesArray = messages;
@@ -420,7 +413,6 @@ class PollingService {
         }
       }
       
-      // Decision based on message history
       if (lastProvider === 'BlueBubbles' || lastProvider === 'iMessage') {
         console.log(`   ✅ Replying via BlueBubbles (iMessage) - based on message history`);
         return { provider: 'bluebubbles', reason: 'Last message was iMessage' };
@@ -431,7 +423,6 @@ class PollingService {
         return { provider: 'tallbob', reason: 'Last message was SMS/MMS' };
       }
       
-      // Check conversation type
       for (const conv of conversations) {
         if (conv.type === 'iMessage' || conv.type?.toLowerCase().includes('imessage')) {
           console.log(`   ✅ Replying via BlueBubbles (iMessage) - conversation type is iMessage`);
@@ -439,7 +430,6 @@ class PollingService {
         }
       }
       
-      // Final fallback to SMS
       console.log(`   ⚠️ Defaulting to Tall Bob (SMS) - no iMessage indicators found`);
       return { provider: 'tallbob', reason: 'Defaulting to SMS' };
       
@@ -663,7 +653,6 @@ class PollingService {
 
           console.log(`   Found ${conversations?.length || 0} conversations`);
           
-          // Update activity info from conversations
           if (conversations && conversations.length > 0) {
             for (const conv of conversations) {
               if (conv.lastMessageAt) {
@@ -679,7 +668,6 @@ class PollingService {
               }
             }
             
-            // Update tracker with activity info
             if (lastActivityDate) {
               await this.tracker.updateContactActivity(contact.contact_id, {
                 last_activity: lastActivityDate.getTime(),
@@ -723,7 +711,6 @@ class PollingService {
             console.log(`      Date: ${latestComment.date}`);
             console.log(`      Conv ID: ${latestComment.conversationId}`);
             
-            // Parse the internal comment for provider commands
             const { forcedProvider, cleanMessage } = this.parseInternalComment(latestComment.text);
             
             if (forcedProvider) {
@@ -737,7 +724,6 @@ class PollingService {
               console.log(`      📸 Image detected: ${imageUrl}`);
             }
             
-            // Skip if it's a @reply comment (internal team note)
             if (cleanMessage.trim().toLowerCase().startsWith('@reply')) {
               console.log(`      ⏭️ Comment starts with @reply - SKIPPING (internal note)`);
               skippedComments++;
@@ -932,7 +918,6 @@ class PollingService {
                     10
                   );
                   
-                  // Handle different response formats
                   let messagesArray = [];
                   if (Array.isArray(messagesResponse)) {
                     messagesArray = messagesResponse;
@@ -944,11 +929,22 @@ class PollingService {
                   
                   if (messagesArray && messagesArray.length > 0) {
                     for (const msg of messagesArray) {
+                      // Try to find date in different possible fields
+                      let msgDate = null;
                       if (msg.date) {
-                        const msgDate = new Date(msg.date);
-                        if (!latestMessageDate || msgDate > latestMessageDate) {
-                          latestMessageDate = msgDate;
-                        }
+                        msgDate = new Date(msg.date);
+                      } else if (msg.createdAt) {
+                        msgDate = new Date(msg.createdAt);
+                      } else if (msg.created_at) {
+                        msgDate = new Date(msg.created_at);
+                      } else if (msg.timestamp) {
+                        msgDate = new Date(msg.timestamp);
+                      } else if (msg.sentDate) {
+                        msgDate = new Date(msg.sentDate);
+                      }
+                      
+                      if (msgDate && (!latestMessageDate || msgDate > latestMessageDate)) {
+                        latestMessageDate = msgDate;
                       }
                     }
                   }
@@ -961,15 +957,17 @@ class PollingService {
                     lastActivity = latestMessageDate;
                     console.log(`      ✅ ACTIVE via messages`);
                   } else {
-                    console.log(`      ❌ INACTIVE - last message too old`);
+                    console.log(`      ❌ INACTIVE - last message too old (${latestMessageDate.toLocaleDateString()})`);
                   }
+                } else {
+                  console.log(`      ⚠️ No message dates found`);
                 }
+              } else {
+                console.log(`      ⚠️ No conversations found`);
               }
             } catch (convError) {
               errorCount++;
               console.log(`      ⚠️ Error checking conversations: ${convError.message}`);
-              // On error, assume active to be safe
-              isActive = true;
             }
           }
           
