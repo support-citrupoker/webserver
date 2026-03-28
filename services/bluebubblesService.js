@@ -20,49 +20,62 @@ class BlueBubblesService {
   }
 
   /**
-   * Send a text iMessage - This creates a chat automatically if it doesn't exist
+   * Find an existing chat by phone number or email
    */
-  async sendMessage({ to, from, message, effectId }) {
+  async findChatByAddress(address) {
     try {
-      console.log(`\n📱 Sending iMessage via BlueBubbles API:`);
-      console.log(`   To: ${to}`);
-      console.log(`   From: ${from || 'auto'}`);
-      console.log(`   Message: ${message?.substring(0, 100)}`);
+      console.log(`🔍 Finding chat for: ${address}`);
       
-      const payload = { 
-        text: message,
-        to: to  // The API accepts 'to' field directly
-      };
+      const response = await this.client.get(`/api/v1/chats?password=${encodeURIComponent(this.password)}`);
+      const chats = response.data;
       
-      // Add optional fields
-      if (from) payload.from = from;
-      if (effectId) payload.effectId = effectId;
+      if (chats && Array.isArray(chats)) {
+        const chat = chats.find(c => {
+          // Check by display name
+          if (c.displayName === address) return true;
+          // Check participants
+          if (c.participants && Array.isArray(c.participants)) {
+            return c.participants.some(p => p.address === address);
+          }
+          return false;
+        });
+        
+        if (chat) {
+          console.log(`   ✅ Found chat GUID: ${chat.guid}`);
+          return chat.guid;
+        }
+      }
       
-      // Send via the message/text endpoint (creates chat automatically)
-      const response = await this.client.post(
-        `/api/v1/message/text?password=${encodeURIComponent(this.password)}`,
-        payload
-      );
-      
-      console.log(`✅ iMessage sent! GUID: ${response.data.guid}`);
-      return {
-        success: true,
-        guid: response.data.guid,
-        chatGuid: response.data.chatGuid,
-        timestamp: response.data.timestamp
-      };
+      console.log(`   ⚠️ No existing chat found for ${address}`);
+      return null;
     } catch (error) {
-      console.error('BlueBubbles send error:', error.response?.data || error.message);
-      throw new Error(`Failed to send iMessage: ${error.message}`);
+      console.error('Failed to find chat:', error.message);
+      return null;
     }
   }
 
   /**
-   * Send a message to an existing chat by GUID (more reliable)
+   * Get all chats (useful for debugging)
+   */
+  async getChats(limit = 50) {
+    try {
+      const response = await this.client.get(
+        `/api/v1/chats?password=${encodeURIComponent(this.password)}`,
+        { params: { limit } }
+      );
+      return response.data;
+    } catch (error) {
+      console.error('Failed to fetch chats:', error.message);
+      throw error;
+    }
+  }
+
+  /**
+   * Send a message to a specific chat GUID (most reliable method)
    */
   async sendToChat({ chatGuid, message, effectId }) {
     try {
-      console.log(`\n📱 Sending iMessage to existing chat: ${chatGuid}`);
+      console.log(`\n📱 Sending iMessage to chat: ${chatGuid}`);
       console.log(`   Message: ${message?.substring(0, 100)}`);
       
       const payload = { text: message };
@@ -87,63 +100,111 @@ class BlueBubblesService {
   }
 
   /**
-   * Get existing chats to find a chat GUID
+   * Send a message - automatically finds or creates chat
    */
-  async getChats(limit = 50) {
+  async sendMessage({ to, from, message, effectId }) {
     try {
-      const response = await this.client.get(
-        `/api/v1/chats?password=${encodeURIComponent(this.password)}`,
-        { params: { limit } }
-      );
-      return response.data;
+      console.log(`\n📱 Sending iMessage via BlueBubbles API:`);
+      console.log(`   To: ${to}`);
+      console.log(`   Message: ${message?.substring(0, 100)}`);
+      
+      // First, try to find existing chat
+      let chatGuid = await this.findChatByAddress(to);
+      
+      let response;
+      
+      if (chatGuid) {
+        // Use existing chat
+        console.log(`   Using existing chat: ${chatGuid}`);
+        response = await this.sendToChat({ chatGuid, message, effectId });
+      } else {
+        // No existing chat found - try the message/text endpoint (this should create a new chat)
+        console.log(`   No existing chat, using message/text endpoint to create new chat...`);
+        
+        const payload = { 
+          text: message,
+          to: to
+        };
+        if (from) payload.from = from;
+        if (effectId) payload.effectId = effectId;
+        
+        response = await this.client.post(
+          `/api/v1/message/text?password=${encodeURIComponent(this.password)}`,
+          payload
+        );
+        
+        console.log(`✅ New chat created and message sent! GUID: ${response.data.guid}`);
+        response = {
+          success: true,
+          guid: response.data.guid,
+          chatGuid: response.data.chatGuid,
+          timestamp: response.data.timestamp
+        };
+      }
+      
+      return response;
+      
     } catch (error) {
-      console.error('Failed to fetch chats:', error.message);
-      throw error;
+      console.error('BlueBubbles send error:', error.response?.data || error.message);
+      throw new Error(`Failed to send iMessage: ${error.message}`);
     }
   }
 
   /**
-   * Find chat GUID for a phone number
+   * Send an attachment
    */
-  async findChatByPhone(phoneNumber) {
-    try {
-      const chats = await this.getChats(100);
-      const chat = chats.find(c => 
-        c.displayName === phoneNumber || 
-        c.participants?.some(p => p.address === phoneNumber)
-      );
-      return chat?.guid || null;
-    } catch (error) {
-      console.error('Failed to find chat:', error.message);
-      return null;
-    }
-  }
-
   async sendAttachment({ to, from, message, mediaUrl, effectId }) {
     try {
       console.log(`📸 Sending iMessage with attachment:`);
       console.log(`   To: ${to}`);
       console.log(`   Media URL: ${mediaUrl}`);
       
-      const payload = { 
-        to: to,
-        text: message || '', 
-        attachment: mediaUrl
-      };
-      if (from) payload.from = from;
-      if (effectId) payload.effectId = effectId;
+      // First, try to find existing chat
+      let chatGuid = await this.findChatByAddress(to);
       
-      const response = await this.client.post(
-        `/api/v1/message/attachment?password=${encodeURIComponent(this.password)}`,
-        payload
-      );
-      
-      console.log(`✅ iMessage with attachment sent! GUID: ${response.data.guid}`);
-      return {
-        success: true,
-        guid: response.data.guid,
-        timestamp: response.data.timestamp
-      };
+      if (chatGuid) {
+        // Send attachment to existing chat
+        const payload = { 
+          text: message || '', 
+          attachment: mediaUrl 
+        };
+        if (effectId) payload.effectId = effectId;
+        
+        const response = await this.client.post(
+          `/api/v1/chat/${chatGuid}/attachment?password=${encodeURIComponent(this.password)}`,
+          payload
+        );
+        
+        console.log(`✅ iMessage with attachment sent! GUID: ${response.data.guid}`);
+        return {
+          success: true,
+          guid: response.data.guid,
+          chatGuid: chatGuid,
+          timestamp: response.data.timestamp
+        };
+      } else {
+        // Use the attachment endpoint which should create a new chat
+        const payload = { 
+          to: to,
+          text: message || '', 
+          attachment: mediaUrl
+        };
+        if (from) payload.from = from;
+        if (effectId) payload.effectId = effectId;
+        
+        const response = await this.client.post(
+          `/api/v1/message/attachment?password=${encodeURIComponent(this.password)}`,
+          payload
+        );
+        
+        console.log(`✅ New chat created and attachment sent! GUID: ${response.data.guid}`);
+        return {
+          success: true,
+          guid: response.data.guid,
+          chatGuid: response.data.chatGuid,
+          timestamp: response.data.timestamp
+        };
+      }
     } catch (error) {
       console.error('BlueBubbles attachment error:', error.response?.data || error.message);
       throw new Error(`Failed to send iMessage with attachment: ${error.message}`);
