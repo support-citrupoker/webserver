@@ -383,7 +383,9 @@ class PollingService {
     return 'unknown';
   }
   
-  async sendReplyWithProvider(contact, replyText, imageUrl, locationId, contactTags = []) {
+ // In polling.service.js - Update the bluebubbles section
+
+async sendReplyWithProvider(contact, replyText, imageUrl, locationId, contactTags = []) {
   try {
     console.log(`\n📤 ===== SENDING REPLY =====`);
     console.log(`   Contact ID: ${contact.contact_id}`);
@@ -407,37 +409,24 @@ class PollingService {
       // Get the iMessage account to send from
       const fromAccount = process.env.BLUEBUBBLES_IMESSAGE_ACCOUNT || contact.phone_number;
       
-      // Try to get the chat GUID for this contact
-      let chatGuid = null;
-      try {
-        chatGuid = await this.bluebubblesService.getChatGuid(contact.phone_number);
-        if (chatGuid) {
-          console.log(`   Found chat GUID: ${chatGuid}`);
-        }
-      } catch (err) {
-        console.log(`   Could not get chat GUID: ${err.message}`);
-      }
-      
       if (imageUrl) {
         result = await this.bluebubblesService.sendAttachment({
           to: contact.phone_number,
           from: fromAccount,
           message: replyText,
-          mediaUrl: imageUrl,
-          chatGuid: chatGuid
+          mediaUrl: imageUrl
         });
         this.stats.totalMmsSent++;
       } else {
         result = await this.bluebubblesService.sendMessage({
           to: contact.phone_number,
           from: fromAccount,
-          message: replyText,
-          chatGuid: chatGuid
+          message: replyText
         });
         this.stats.totaliMessageSent++;
       }
       
-      console.log(`   ✅ iMessage sent! GUID: ${result.guid}`);
+      console.log(`   ✅ iMessage sent! GUID: ${result.guid}, Chat: ${result.chatGuid}`);
       this.stats.totalSmsSent++;
       return { success: true, provider: 'bluebubbles', result };
       
