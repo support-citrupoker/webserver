@@ -406,8 +406,8 @@ class PollingService {
         
         this.trackApiCall('sendiMessage', 'sendiMessage');
         
-        // Get the iMessage account to send from
-        const fromAccount = process.env.BLUEBUBBLES_IMESSAGE_ACCOUNT || contact.phone_number;
+        // Get the iMessage account to send from (optional)
+        const fromAccount = process.env.BLUEBUBBLES_IMESSAGE_ACCOUNT || null;
         
         console.log(`   Sending via BlueBubbles (timeout: 60s)...`);
         
