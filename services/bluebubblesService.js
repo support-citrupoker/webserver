@@ -1,5 +1,6 @@
 // services/bluebubblesService.js
 import axios from 'axios';
+import { v4 as uuidv4 } from 'uuid';
 
 class BlueBubblesService {
   constructor(serverUrl, password) {
@@ -20,110 +21,51 @@ class BlueBubblesService {
   }
 
   /**
-   * Create a chat with a phone number/email
-   * This is the key method - we need a chat GUID before sending messages
+   * Generate a chatGuid for a phone number or email
+   * Format: any;-;+phone OR any;-;email
    */
-  async createChat(address) {
-    try {
-      console.log(`📝 Creating new chat for: ${address}`);
-      
-      // According to IMCore docs, we need to create a chat first
-      // The endpoint might be /api/v1/chat/create or /api/v1/chat
-      const response = await this.client.post(
-        `/api/v1/chat/create?password=${encodeURIComponent(this.password)}`,
-        { addresses: [address] }
-      );
-      
-      console.log(`   ✅ Chat created! GUID: ${response.data.guid}`);
-      return response.data.guid;
-    } catch (error) {
-      console.error(`   ❌ Failed to create chat:`, error.response?.data || error.message);
-      
-      // Try alternative endpoint
-      try {
-        console.log(`   Trying alternative endpoint...`);
-        const altResponse = await this.client.post(
-          `/api/v1/chat?password=${encodeURIComponent(this.password)}`,
-          { addresses: [address] }
-        );
-        console.log(`   ✅ Chat created via alt endpoint! GUID: ${altResponse.data.guid}`);
-        return altResponse.data.guid;
-      } catch (altError) {
-        console.error(`   ❌ Alternative also failed:`, altError.response?.data || altError.message);
-        throw new Error(`Cannot create chat: ${error.message}`);
-      }
-    }
+  generateChatGuid(address) {
+    return `any;-;${address}`;
   }
 
   /**
-   * Get or create a chat GUID for an address
+   * Send a text iMessage
    */
-  async getOrCreateChat(address) {
+  async sendMessage({ to, from, message, effectId }) {
     try {
-      console.log(`🔍 Getting/Creating chat for: ${address}`);
-      
-      // First, try to get existing chats (this might be /api/v1/chats or /api/v1/chat)
-      let existingChats = null;
-      try {
-        const response = await this.client.get(`/api/v1/chat?password=${encodeURIComponent(this.password)}`);
-        existingChats = response.data;
-      } catch (e) {
-        // Try alternative endpoint
-        try {
-          const response = await this.client.get(`/api/v1/chats?password=${encodeURIComponent(this.password)}`);
-          existingChats = response.data;
-        } catch (e2) {
-          console.log(`   Could not fetch existing chats, will create new one`);
-        }
-      }
-      
-      // If we got existing chats, search for this address
-      if (existingChats && Array.isArray(existingChats)) {
-        const existingChat = existingChats.find(chat => {
-          if (chat.displayName === address) return true;
-          if (chat.participants && Array.isArray(chat.participants)) {
-            return chat.participants.some(p => p.address === address);
-          }
-          return false;
-        });
-        
-        if (existingChat) {
-          console.log(`   ✅ Found existing chat: ${existingChat.guid}`);
-          return existingChat.guid;
-        }
-      }
-      
-      // No existing chat found, create a new one
-      return await this.createChat(address);
-      
-    } catch (error) {
-      console.error(`❌ Failed to get/create chat:`, error.message);
-      throw error;
-    }
-  }
-
-  /**
-   * Send a message to a chat GUID
-   */
-  async sendToChat({ chatGuid, message, effectId }) {
-    try {
-      console.log(`📱 Sending iMessage to chat: ${chatGuid}`);
+      console.log(`\n📱 Sending iMessage via BlueBubbles API:`);
+      console.log(`   To: ${to}`);
       console.log(`   Message: ${message?.substring(0, 100)}`);
       
-      const payload = { text: message };
-      if (effectId) payload.effectId = effectId;
+      const chatGuid = this.generateChatGuid(to);
+      const tempGuid = `temp-${uuidv4()}`;
+      
+      const payload = {
+        chatGuid: chatGuid,
+        tempGuid: tempGuid,
+        message: message
+      };
+      
+      // Add optional from if provided (your iMessage account)
+      if (from) {
+        payload.from = from;
+      }
+      
+      // Add effect if provided
+      if (effectId) {
+        payload.effectId = effectId;
+      }
       
       const response = await this.client.post(
-        `/api/v1/chat/${chatGuid}/message?password=${encodeURIComponent(this.password)}`,
+        `/api/v1/message/text?password=${encodeURIComponent(this.password)}`,
         payload
       );
       
-      console.log(`✅ iMessage sent! GUID: ${response.data.guid}`);
+      console.log(`✅ iMessage sent! Response:`, response.data);
       return {
         success: true,
-        guid: response.data.guid,
-        chatGuid: chatGuid,
-        timestamp: response.data.timestamp
+        guid: response.data.data?.guid,
+        timestamp: new Date().toISOString()
       };
     } catch (error) {
       console.error('BlueBubbles send error:', error.response?.data || error.message);
@@ -132,29 +74,7 @@ class BlueBubblesService {
   }
 
   /**
-   * Send a message - main entry point
-   */
-  async sendMessage({ to, from, message, effectId }) {
-    try {
-      console.log(`\n📱 Sending iMessage via BlueBubbles API:`);
-      console.log(`   To: ${to}`);
-      console.log(`   Message: ${message?.substring(0, 100)}`);
-      
-      // Step 1: Get or create a chat GUID
-      const chatGuid = await this.getOrCreateChat(to);
-      console.log(`   Using chat GUID: ${chatGuid}`);
-      
-      // Step 2: Send message to that chat
-      return await this.sendToChat({ chatGuid, message, effectId });
-      
-    } catch (error) {
-      console.error(`❌ Error sending message:`, error.message);
-      throw error;
-    }
-  }
-
-  /**
-   * Send an attachment
+   * Send an iMessage with attachment
    */
   async sendAttachment({ to, from, message, mediaUrl, effectId }) {
     try {
@@ -162,28 +82,49 @@ class BlueBubblesService {
       console.log(`   To: ${to}`);
       console.log(`   Media URL: ${mediaUrl}`);
       
-      // Step 1: Get or create a chat GUID
-      const chatGuid = await this.getOrCreateChat(to);
-      console.log(`   Using chat GUID: ${chatGuid}`);
+      const chatGuid = this.generateChatGuid(to);
+      const tempGuid = `temp-${uuidv4()}`;
       
-      // Step 2: Send attachment to that chat
-      const payload = { 
-        text: message || '', 
-        attachment: mediaUrl 
-      };
-      if (effectId) payload.effectId = effectId;
+      // For attachments, we need to use FormData
+      const formData = new FormData();
+      formData.append('chatGuid', chatGuid);
+      formData.append('tempGuid', tempGuid);
+      if (message) formData.append('message', message);
+      if (from) formData.append('from', from);
+      if (effectId) formData.append('effectId', effectId);
+      
+      // If mediaUrl is a URL, we need to fetch it and attach as file
+      // For now, assume it's a file path or we're passing the file directly
+      if (mediaUrl.startsWith('http')) {
+        // Download the file and attach
+        const fileResponse = await axios.get(mediaUrl, { responseType: 'arraybuffer' });
+        const fileName = mediaUrl.split('/').pop() || 'attachment';
+        const blob = new Blob([fileResponse.data]);
+        formData.append('attachment', blob, fileName);
+      } else {
+        // Assume it's a local file path
+        const fs = await import('fs');
+        const fileBuffer = fs.readFileSync(mediaUrl);
+        const blob = new Blob([fileBuffer]);
+        const fileName = mediaUrl.split('/').pop();
+        formData.append('attachment', blob, fileName);
+      }
       
       const response = await this.client.post(
-        `/api/v1/chat/${chatGuid}/attachment?password=${encodeURIComponent(this.password)}`,
-        payload
+        `/api/v1/message/attachment?password=${encodeURIComponent(this.password)}`,
+        formData,
+        {
+          headers: {
+            'Content-Type': 'multipart/form-data'
+          }
+        }
       );
       
-      console.log(`✅ iMessage with attachment sent! GUID: ${response.data.guid}`);
+      console.log(`✅ iMessage with attachment sent!`);
       return {
         success: true,
-        guid: response.data.guid,
-        chatGuid: chatGuid,
-        timestamp: response.data.timestamp
+        guid: response.data.data?.guid,
+        timestamp: new Date().toISOString()
       };
     } catch (error) {
       console.error('BlueBubbles attachment error:', error.response?.data || error.message);
@@ -191,14 +132,87 @@ class BlueBubblesService {
     }
   }
 
+  /**
+   * Query chats to find existing conversations
+   */
+  async queryChats(limit = 20, offset = 0) {
+    try {
+      console.log(`🔍 Querying chats...`);
+      
+      const response = await this.client.post(
+        `/api/v1/chat/query?password=${encodeURIComponent(this.password)}`,
+        { limit, offset }
+      );
+      
+      return response.data.data || [];
+    } catch (error) {
+      console.error('Failed to query chats:', error.message);
+      return [];
+    }
+  }
+
+  /**
+   * Get messages from a specific chat
+   */
+  async getChatMessages(chatGuid, limit = 25, offset = 0, sort = 'DESC') {
+    try {
+      const response = await this.client.get(
+        `/api/v1/chat/${encodeURIComponent(chatGuid)}/message?password=${encodeURIComponent(this.password)}`,
+        { params: { limit, offset, sort } }
+      );
+      
+      return response.data.data || [];
+    } catch (error) {
+      console.error('Failed to get chat messages:', error.message);
+      return [];
+    }
+  }
+
+  /**
+   * Get recent messages across all chats
+   */
+  async getRecentMessages(limit = 10, offset = 0, sort = 'DESC') {
+    try {
+      const response = await this.client.get(
+        `/api/v1/message?password=${encodeURIComponent(this.password)}`,
+        { params: { limit, offset, sort } }
+      );
+      
+      return response.data.data || [];
+    } catch (error) {
+      console.error('Failed to get recent messages:', error.message);
+      return [];
+    }
+  }
+
+  /**
+   * Find a chat GUID for a phone number/email
+   */
+  async findChatByAddress(address) {
+    try {
+      const chats = await this.queryChats(100);
+      const targetGuid = this.generateChatGuid(address);
+      
+      const chat = chats.find(c => 
+        c.guid === targetGuid || 
+        c.chatIdentifier === address ||
+        c.participants?.some(p => p.address === address)
+      );
+      
+      return chat?.guid || null;
+    } catch (error) {
+      console.error('Failed to find chat:', error.message);
+      return null;
+    }
+  }
+
   async getStatus() {
     try {
-      // Try the ping endpoint
       const response = await this.client.get(`/api/v1/ping?password=${encodeURIComponent(this.password)}`);
       return {
-        connected: true,
+        connected: response.status === 200,
         serverUrl: this.serverUrl,
-        version: response.data?.version || 'unknown',
+        data: response.data,
         timestamp: new Date().toISOString()
       };
     } catch (error) {
@@ -213,16 +227,16 @@ class BlueBubblesService {
 
   async checkiMessageAvailability(address) {
     try {
-      const cleanAddress = address.trim();
+      // This uses the handle availability endpoint
       const response = await this.client.get(
         `/api/v1/handle/availability/imessage?password=${encodeURIComponent(this.password)}`,
-        { params: { address: cleanAddress } }
+        { params: { address: address } }
       );
       
       return {
-        hasiMessage: response.data.available === true,
-        service: response.data.service || (response.data.available ? 'iMessage' : 'SMS'),
-        address: cleanAddress,
+        hasiMessage: response.data.data?.available === true,
+        service: response.data.data?.service || (response.data.data?.available ? 'iMessage' : 'SMS'),
+        address: address,
         timestamp: new Date().toISOString()
       };
     } catch (error) {
