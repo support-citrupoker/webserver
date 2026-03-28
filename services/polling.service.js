@@ -832,190 +832,216 @@ class PollingService {
     }
   }
 
-  async syncContacts() {
-    if (this.isRateLimited() || this.isSyncing) return;
-
-    this.isSyncing = true;
-
-    if (this.syncOnlyActive) {
-      await this.syncActiveContactsOnly();
-    } else {
-      await this.syncAllContacts();
-    }
-
-    this.isSyncing = false;
-  }
-
   async syncActiveContactsOnly() {
-    console.log(`\n🔄 ACTIVE CONTACT SYNC STARTED (last ${this.activeDaysThreshold} days)...`);
+  console.log(`\n🔄 ACTIVE CONTACT SYNC STARTED (last ${this.activeDaysThreshold} days)...`);
+  
+  try {
+    let page = 1;
+    let hasMore = true;
+    let totalAdded = 0;
+    let activeCount = 0;
+    let inactiveCount = 0;
+    let noPhoneCount = 0;
+    let errorCount = 0;
+    const currentContactIds = new Set();
+    
+    const cutoffDate = new Date();
+    cutoffDate.setDate(cutoffDate.getDate() - this.activeDaysThreshold);
+    const cutoffTimestamp = cutoffDate.getTime();
+    
+    console.log(`📅 Cutoff date: ${cutoffDate.toLocaleDateString()} (timestamp: ${cutoffTimestamp})`);
+    console.log(`📅 Current date: ${new Date().toLocaleDateString()}`);
+    
+    while (hasMore && !this.isRateLimited()) {
+      console.log(`\n📦 Fetching page ${page}...`);
+      
+      this.trackApiCall('searchContacts', 'searchContacts');
+      
+      const response = await this.ghlService.client.contacts.searchContactsAdvanced({
+        locationId: process.env.GHL_LOCATION_ID,
+        pageLimit: this.syncBatchSize,
+        page: page
+      });
 
-    try {
-      let page = 1;
-      let hasMore = true;
-      let totalAdded = 0;
-      let activeCount = 0;
-      let inactiveCount = 0;
-      let noPhoneCount = 0;
-      let errorCount = 0;
-      const currentContactIds = new Set();
-
-      const cutoffDate = new Date();
-      cutoffDate.setDate(cutoffDate.getDate() - this.activeDaysThreshold);
-      const cutoffTimestamp = cutoffDate.getTime();
-
-      console.log(`📅 Cutoff date: ${cutoffDate.toLocaleDateString()}`);
-
-      while (hasMore && !this.isRateLimited()) {
-        console.log(`\n📦 Fetching page ${page}...`);
-
-        this.trackApiCall('searchContacts', 'searchContacts');
-
-        const response = await this.ghlService.client.contacts.searchContactsAdvanced({
-          locationId: process.env.GHL_LOCATION_ID,
-          pageLimit: this.syncBatchSize,
-          page: page
-        });
-
-        const contacts = response.contacts || [];
-        console.log(`   Received ${contacts.length} total contacts`);
-
-        for (const contact of contacts) {
-          if (!contact.phone) {
-            noPhoneCount++;
-            continue;
+      const contacts = response.contacts || [];
+      console.log(`   Received ${contacts.length} total contacts`);
+      
+      for (const contact of contacts) {
+        if (!contact.phone) {
+          noPhoneCount++;
+          console.log(`   ⏭️ Contact ${contact.id}: No phone number - skipping`);
+          continue;
+        }
+        
+        console.log(`\n   📍 Processing contact: ${contact.id} (${contact.phone})`);
+        console.log(`      Contact lastMessageDate: ${contact.lastMessageDate || 'none'}`);
+        
+        let isActive = false;
+        let lastActivity = null;
+        
+        // Method 1: Check contact.lastMessageDate
+        if (contact.lastMessageDate) {
+          const lastMsgDate = new Date(contact.lastMessageDate);
+          console.log(`      Checking lastMessageDate: ${lastMsgDate.toISOString()}`);
+          if (lastMsgDate.getTime() >= cutoffTimestamp) {
+            isActive = true;
+            lastActivity = lastMsgDate;
+            console.log(`      ✅ ACTIVE via lastMessageDate: ${lastMsgDate.toLocaleDateString()}`);
+          } else {
+            console.log(`      ❌ lastMessageDate too old: ${lastMsgDate.toLocaleDateString()}`);
           }
-
-          let isActive = false;
-          let lastActivity = null;
-
-          // Method 1: Check contact.lastMessageDate
-          if (contact.lastMessageDate) {
-            const lastMsgDate = new Date(contact.lastMessageDate);
-            if (lastMsgDate.getTime() >= cutoffTimestamp) {
-              isActive = true;
-              lastActivity = lastMsgDate;
-              console.log(`   ✅ ACTIVE (lastMessageDate): ${contact.id} (${contact.phone}) - ${lastMsgDate.toLocaleDateString()}`);
-            }
-          }
-
-          // Method 2: Check conversations and their messages
-          if (!isActive) {
-            try {
-              const conversations = await this.ghlService.searchConversations({
-                contactId: contact.id,
-                limit: 5,
-                locationId: process.env.GHL_LOCATION_ID
-              });
-
-              if (conversations && conversations.length > 0) {
-                let latestMessageDate = null;
-
-                // Check each conversation's messages
-                for (const conv of conversations) {
-                  try {
-                    const messages = await this.ghlService.getConversationMessages(
-                      conv.id,
-                      process.env.GHL_LOCATION_ID,
-                      10
-                    );
-
-                    // Handle different response formats
-                    let messagesArray = [];
-                    if (Array.isArray(messages)) {
-                      messagesArray = messages;
-                    } else if (messages && messages.messages) {
-                      messagesArray = messages.messages;
-                    } else if (messages && messages.data) {
-                      messagesArray = messages.data;
-                    }
-
-                    if (messagesArray && messagesArray.length > 0) {
-                      // Find the most recent message
-                      for (const msg of messagesArray) {
-                        if (msg.date) {
-                          const msgDate = new Date(msg.date);
-                          if (!latestMessageDate || msgDate > latestMessageDate) {
-                            latestMessageDate = msgDate;
-                          }
+        }
+        
+        // Method 2: Check conversations and their messages
+        if (!isActive) {
+          console.log(`      🔍 Checking conversations for activity...`);
+          try {
+            const conversations = await this.ghlService.searchConversations({
+              contactId: contact.id,
+              limit: 5,
+              locationId: process.env.GHL_LOCATION_ID
+            });
+            
+            console.log(`      Found ${conversations?.length || 0} conversations`);
+            
+            if (conversations && conversations.length > 0) {
+              let latestMessageDate = null;
+              let messageCount = 0;
+              
+              // Check each conversation's messages
+              for (let i = 0; i < conversations.length; i++) {
+                const conv = conversations[i];
+                console.log(`      📨 Checking conversation ${i + 1}: ${conv.id}`);
+                console.log(`         Conversation type: ${conv.type}`);
+                console.log(`         Conversation lastMessageAt: ${conv.lastMessageAt || 'none'}`);
+                
+                try {
+                  const messagesResponse = await this.ghlService.getConversationMessages(
+                    conv.id, 
+                    process.env.GHL_LOCATION_ID, 
+                    10
+                  );
+                  
+                  // Handle different response formats
+                  let messagesArray = [];
+                  if (Array.isArray(messagesResponse)) {
+                    messagesArray = messagesResponse;
+                    console.log(`         Raw response is array with ${messagesArray.length} messages`);
+                  } else if (messagesResponse && messagesResponse.messages) {
+                    messagesArray = messagesResponse.messages;
+                    console.log(`         Response has messages array with ${messagesArray.length} messages`);
+                  } else if (messagesResponse && messagesResponse.data) {
+                    messagesArray = messagesResponse.data;
+                    console.log(`         Response has data array with ${messagesArray.length} messages`);
+                  } else if (messagesResponse) {
+                    messagesArray = [messagesResponse];
+                    console.log(`         Response is single message object`);
+                  }
+                  
+                  console.log(`         Found ${messagesArray.length} messages`);
+                  
+                  if (messagesArray && messagesArray.length > 0) {
+                    for (const msg of messagesArray) {
+                      if (msg.date) {
+                        const msgDate = new Date(msg.date);
+                        messageCount++;
+                        console.log(`            Message ${messageCount}: ${msg.direction || 'unknown'} at ${msgDate.toISOString()}`);
+                        if (!latestMessageDate || msgDate > latestMessageDate) {
+                          latestMessageDate = msgDate;
+                          console.log(`            ⭐ This is the latest so far: ${msgDate.toLocaleDateString()}`);
                         }
                       }
                     }
-                  } catch (msgError) {
-                    console.log(`   ⚠️ Could not fetch messages for conv ${conv.id}: ${msgError.message}`);
-                  }
-                }
-
-                if (latestMessageDate) {
-                  if (latestMessageDate.getTime() >= cutoffTimestamp) {
-                    isActive = true;
-                    lastActivity = latestMessageDate;
-                    console.log(`   ✅ ACTIVE (messages): ${contact.id} (${contact.phone}) - ${latestMessageDate.toLocaleDateString()}`);
                   } else {
-                    console.log(`   ⏭️ INACTIVE: ${contact.id} (${contact.phone}) - Last message: ${latestMessageDate.toLocaleDateString()}`);
+                    console.log(`         ⚠️ No messages found in this conversation`);
                   }
+                } catch (msgError) {
+                  console.log(`         ❌ Error fetching messages: ${msgError.message}`);
+                }
+              }
+              
+              if (latestMessageDate) {
+                console.log(`      📅 Latest message date found: ${latestMessageDate.toISOString()}`);
+                console.log(`      Cutoff timestamp: ${cutoffTimestamp}`);
+                console.log(`      Message timestamp: ${latestMessageDate.getTime()}`);
+                console.log(`      Is >= cutoff: ${latestMessageDate.getTime() >= cutoffTimestamp}`);
+                
+                if (latestMessageDate.getTime() >= cutoffTimestamp) {
+                  isActive = true;
+                  lastActivity = latestMessageDate;
+                  console.log(`      ✅ ACTIVE via messages: ${latestMessageDate.toLocaleDateString()}`);
                 } else {
-                  console.log(`   ⏭️ INACTIVE: ${contact.id} (${contact.phone}) - No messages found`);
+                  console.log(`      ❌ INACTIVE - last message too old: ${latestMessageDate.toLocaleDateString()}`);
                 }
               } else {
-                console.log(`   ⏭️ INACTIVE: ${contact.id} (${contact.phone}) - No conversations`);
+                console.log(`      ⚠️ No valid message dates found in any conversation`);
               }
-            } catch (convError) {
-              errorCount++;
-              console.log(`   ⚠️ Error checking conversations: ${convError.message}`);
-              // On error, assume active to be safe
-              isActive = true;
+            } else {
+              console.log(`      ❌ No conversations found for this contact`);
             }
-          }
-
-          if (isActive) {
-            await this.tracker.addContact(contact.id, contact.phone);
-            if (lastActivity) {
-              await this.tracker.updateContactActivity(contact.id, {
-                last_activity: lastActivity.getTime()
-              });
-            }
-            currentContactIds.add(contact.id);
-            totalAdded++;
-            activeCount++;
-          } else {
-            inactiveCount++;
+          } catch (convError) {
+            errorCount++;
+            console.log(`      ❌ Error checking conversations: ${convError.message}`);
+            // On error, assume active to be safe
+            isActive = true;
+            console.log(`      ⚠️ Assuming active due to error`);
           }
         }
-
-        hasMore = contacts.length === this.syncBatchSize;
-        page++;
-
-        if (hasMore) {
-          await new Promise(resolve => setTimeout(resolve, this.delayBetweenPages));
-        }
-      }
-
-      // Update tracker with activity status
-      const allTrackedContacts = await this.tracker.getContactsToCheck(10000);
-      let keptCount = 0;
-
-      console.log(`\n📊 Updating tracker activity status...`);
-      for (const trackedContact of allTrackedContacts) {
-        if (currentContactIds.has(trackedContact.contact_id)) {
-          keptCount++;
+        
+        if (isActive) {
+          await this.tracker.addContact(contact.id, contact.phone);
+          if (lastActivity) {
+            await this.tracker.updateContactActivity(contact.id, {
+              last_activity: lastActivity.getTime()
+            });
+          }
+          currentContactIds.add(contact.id);
+          totalAdded++;
+          activeCount++;
+          console.log(`   ✅ ADDED ACTIVE: ${contact.id} (${contact.phone})`);
         } else {
-          console.log(`   ℹ️ Contact ${trackedContact.contact_id} not in current sync (may be inactive)`);
+          inactiveCount++;
+          console.log(`   ❌ SKIPPED INACTIVE: ${contact.id} (${contact.phone})`);
         }
       }
-
-      const finalCount = await this.tracker.getCount();
-      console.log(`\n✅ ACTIVE CONTACT SYNC COMPLETE:`);
-      console.log(`   • Active contacts added: ${activeCount}`);
-      console.log(`   • Inactive contacts skipped: ${inactiveCount}`);
-      console.log(`   • Contacts without phone: ${noPhoneCount}`);
-      console.log(`   • Errors: ${errorCount}`);
-      console.log(`   • Total in tracker: ${finalCount}`);
-      console.log(`   • Active in tracker: ${keptCount}`);
-
-    } catch (error) {
-      console.error(`❌ ACTIVE CONTACT SYNC ERROR:`, error.message);
+      
+      hasMore = contacts.length === this.syncBatchSize;
+      page++;
+      
+      if (hasMore) {
+        console.log(`\n⏱️ Waiting ${this.delayBetweenPages/60000} minutes before next page...`);
+        await new Promise(resolve => setTimeout(resolve, this.delayBetweenPages));
+      }
     }
+    
+    // Update tracker with activity status
+    const allTrackedContacts = await this.tracker.getContactsToCheck(10000);
+    let keptCount = 0;
+    
+    console.log(`\n📊 Updating tracker activity status...`);
+    for (const trackedContact of allTrackedContacts) {
+      if (currentContactIds.has(trackedContact.contact_id)) {
+        keptCount++;
+        console.log(`   ✅ Keeping active: ${trackedContact.contact_id}`);
+      } else {
+        console.log(`   ℹ️ Contact ${trackedContact.contact_id} not in current sync (may be inactive)`);
+      }
+    }
+    
+    const finalCount = await this.tracker.getCount();
+    console.log(`\n✅ ACTIVE CONTACT SYNC COMPLETE:`);
+    console.log(`   • Active contacts added: ${activeCount}`);
+    console.log(`   • Inactive contacts skipped: ${inactiveCount}`);
+    console.log(`   • Contacts without phone: ${noPhoneCount}`);
+    console.log(`   • Errors: ${errorCount}`);
+    console.log(`   • Total in tracker: ${finalCount}`);
+    console.log(`   • Active in tracker: ${keptCount}`);
+    
+  } catch (error) {
+    console.error(`❌ ACTIVE CONTACT SYNC ERROR:`, error.message);
+    console.error(error.stack);
   }
+}
 
   async syncAllContacts() {
     console.log(`\n🔄 FULL CONTACT SYNC STARTED...`);
