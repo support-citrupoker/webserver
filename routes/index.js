@@ -450,63 +450,128 @@ export default (app, tallbobService, ghlService, messageController, bluebubblesS
   })
 
 
-  // Add to index.js
-  app.get('/test/contact-activity/:phone', async (req, res) => {
-    try {
-      const { phone } = req.params;
-
-      // Format phone
-      const cleanPhone = phone.replace(/\D/g, '');
-      const formattedPhone = `+${cleanPhone}`;
-
-      // Find contact
-      const contacts = await ghlService.searchContactsByPhone(formattedPhone);
-
-      if (!contacts || contacts.length === 0) {
-        return res.json({ success: false, error: 'Contact not found' });
-      }
-
-      const contact = contacts[0];
-
-      // Get conversations
-      const conversations = await ghlService.searchConversations({
-        contactId: contact.id,
-        limit: 5
-      });
-
-      // Get messages from the first conversation
-      let messages = [];
-      if (conversations && conversations.length > 0) {
-        messages = await ghlService.getConversationMessages(conversations[0].id, ghlService.locationId, 10);
-      }
-
-      res.json({
-        success: true,
-        contact: {
-          id: contact.id,
-          phone: contact.phone,
-          lastMessageDate: contact.lastMessageDate,
-          tags: contact.tags
-        },
-        conversations: conversations.map(c => ({
-          id: c.id,
-          type: c.type,
-          lastMessageAt: c.lastMessageAt,
-          lastInternalComment: c.lastInternalComment
-        })),
-        messages: messages.map(m => ({
-          id: m.id,
-          body: m.body,
-          direction: m.direction,
-          date: m.date,
-          provider: m.provider
-        }))
-      });
-
-    } catch (error) {
-      res.status(500).json({ error: error.message });
+  // Add to index.js - Fixed test endpoint
+app.get('/test/contact-activity/:phone', async (req, res) => {
+  try {
+    const { phone } = req.params;
+    
+    // Format phone
+    const cleanPhone = phone.replace(/\D/g, '');
+    const formattedPhone = `+${cleanPhone}`;
+    
+    console.log(`🔍 Testing contact activity for: ${formattedPhone}`);
+    
+    // Find contact
+    const contacts = await ghlService.searchContactsByPhone(formattedPhone);
+    
+    if (!contacts || contacts.length === 0) {
+      return res.json({ success: false, error: 'Contact not found' });
     }
-  })
+    
+    const contact = contacts[0];
+    console.log(`✅ Found contact: ${contact.id}`);
+    
+    // Get conversations
+    const conversations = await ghlService.searchConversations({
+      contactId: contact.id,
+      limit: 5
+    });
+    
+    console.log(`✅ Found ${conversations?.length || 0} conversations`);
+    
+    // Get messages from the first conversation (handle different response formats)
+    let messages = [];
+    if (conversations && conversations.length > 0) {
+      const convId = conversations[0].id;
+      console.log(`📋 Fetching messages for conversation: ${convId}`);
+      
+      const messagesResponse = await ghlService.getConversationMessages(convId, ghlService.locationId, 10);
+      
+      // Handle different response formats
+      if (Array.isArray(messagesResponse)) {
+        messages = messagesResponse;
+      } else if (messagesResponse && messagesResponse.messages) {
+        messages = messagesResponse.messages;
+      } else if (messagesResponse && messagesResponse.data) {
+        messages = messagesResponse.data;
+      } else if (messagesResponse) {
+        messages = [messagesResponse];
+      }
+    }
+    
+    // Calculate activity
+    let lastActivityDate = null;
+    
+    // Check contact.lastMessageDate
+    if (contact.lastMessageDate) {
+      lastActivityDate = new Date(contact.lastMessageDate);
+      console.log(`📅 Contact lastMessageDate: ${lastActivityDate.toISOString()}`);
+    }
+    
+    // Check conversation lastMessageAt
+    if (conversations && conversations.length > 0) {
+      const conv = conversations[0];
+      if (conv.lastMessageAt) {
+        const convDate = new Date(conv.lastMessageAt);
+        if (!lastActivityDate || convDate > lastActivityDate) {
+          lastActivityDate = convDate;
+        }
+        console.log(`📅 Conversation lastMessageAt: ${convDate.toISOString()}`);
+      }
+    }
+    
+    // Check message dates
+    if (messages && messages.length > 0) {
+      for (const msg of messages) {
+        if (msg.date) {
+          const msgDate = new Date(msg.date);
+          if (!lastActivityDate || msgDate > lastActivityDate) {
+            lastActivityDate = msgDate;
+          }
+          console.log(`📅 Message date: ${msgDate.toISOString()} (${msg.direction})`);
+        }
+      }
+    }
+    
+    // Calculate days since last activity
+    let daysSinceActivity = null;
+    if (lastActivityDate) {
+      const now = new Date();
+      const diffTime = Math.abs(now - lastActivityDate);
+      daysSinceActivity = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+    }
+    
+    res.json({
+      success: true,
+      contact: {
+        id: contact.id,
+        phone: contact.phone,
+        lastMessageDate: contact.lastMessageDate,
+        tags: contact.tags || []
+      },
+      lastActivity: lastActivityDate ? {
+        date: lastActivityDate.toISOString(),
+        daysAgo: daysSinceActivity
+      } : null,
+      conversations: conversations ? conversations.map(c => ({
+        id: c.id,
+        type: c.type,
+        lastMessageAt: c.lastMessageAt,
+        lastInternalComment: c.lastInternalComment?.substring(0, 100)
+      })) : [],
+      messagesCount: messages ? (Array.isArray(messages) ? messages.length : 1) : 0,
+      isActive: lastActivityDate ? daysSinceActivity <= 30 : false
+    });
+    
+  } catch (error) {
+    console.error('❌ Error:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: error.message,
+      stack: error.stack 
+    });
+  }
+});
 
   // Message status updates (delivered, read, etc.)
   app.post('/bluebubbles/message/status', async (req, res) => {
