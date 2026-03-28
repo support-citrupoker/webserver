@@ -352,90 +352,102 @@ export default (app, tallbobService, ghlService, messageController, bluebubblesS
   // ==================== BLUEBUBBLES WEBHOOK ROUTES ====================
 
   // Main incoming message webhook
-  app.post('/bluebubbles/incoming', async (req, res) => {
-    try {
-      const webhookData = req.body;
-      
-      // Enhanced logging
-      console.log('📱 Received BlueBubbles webhook');
-      
-      // Verify password
-      const apiPassword = req.query.password || req.headers['x-bluebubbles-password'];
-      if (process.env.BLUEBUBBLES_PASSWORD && apiPassword !== process.env.BLUEBUBBLES_PASSWORD) {
-        console.error('❌ Invalid BlueBubbles webhook password');
-        return res.status(401).json({ error: 'Unauthorized' });
-      }
-      
-      // Acknowledge immediately
-      res.status(200).json({ received: true, timestamp: new Date().toISOString() });
-      
-      // Process asynchronously
-      setImmediate(async () => {
-        try {
-          let messageData;
+  // ==================== BLUEBUBBLES WEBHOOK ROUTES ====================
+
+// Main incoming message webhook
+app.post('/bluebubbles/incoming', async (req, res) => {
+  try {
+    const webhookData = req.body;
+    
+    console.log('📱 Received BlueBubbles webhook');
+    
+    // Verify password
+    const apiPassword = req.query.password || req.headers['x-bluebubbles-password'];
+    if (process.env.BLUEBUBBLES_PASSWORD && apiPassword !== process.env.BLUEBUBBLES_PASSWORD) {
+      console.error('❌ Invalid BlueBubbles webhook password');
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+    
+    // Acknowledge immediately
+    res.status(200).json({ received: true, timestamp: new Date().toISOString() });
+    
+    // Process asynchronously
+    setImmediate(async () => {
+      try {
+        let messageData;
+        let isFromMe = false;
+        
+        // Handle BlueBubbles webhook format: { type: 'new-message', data: {...} }
+        if (webhookData.type === 'new-message' && webhookData.data) {
+          const msg = webhookData.data;
           
-          // Handle BlueBubbles webhook format: { type: 'new-message', data: {...} }
-          if (webhookData.type === 'new-message' && webhookData.data) {
-            const msg = webhookData.data;
-            
-            console.log(`   From: ${msg.handle?.address}`);
-            console.log(`   Message: ${msg.text?.substring(0, 100)}`);
-            console.log(`   GUID: ${msg.guid}`);
-            console.log(`   Timestamp: ${new Date(msg.dateCreated).toISOString()}`);
-            
-            messageData = {
-              // Core message data
-              guid: msg.guid,
-              text: msg.text || '',
-              timestamp: Math.floor(msg.dateCreated / 1000),
-              isFromMe: msg.isFromMe || false,
-              
-              // Sender info
-              sender: msg.handle?.address,
-              senderName: msg.handle?.name,
-              senderService: msg.handle?.service,
-              
-              // Recipient info (from chat)
-              recipient: msg.chats?.[0]?.recipient,
-              chatGuid: msg.chats?.[0]?.guid,
-              chatName: msg.chats?.[0]?.displayName,
-              
-              // Attachments
-              attachments: msg.attachments || [],
-              
-              // Status
-              isDelivered: msg.isDelivered,
-              dateDelivered: msg.dateDelivered,
-              dateRead: msg.dateRead,
-              
-              // Metadata
-              partCount: msg.partCount,
-              originalROWID: msg.originalROWID
-            };
-          } else {
-            // Fallback for test webhooks or direct format
-            messageData = webhookData;
-            console.log('⚠️ Unknown webhook format:', JSON.stringify(webhookData, null, 2));
+          // ⭐ CRITICAL: Skip messages sent by your own Mac
+          isFromMe = msg.isFromMe === true;
+          
+          if (isFromMe) {
+            console.log(`⏭️ Skipping outbound message (sent by me): ${msg.text?.substring(0, 50)}`);
+            return;
           }
           
-          console.log('✅ Processing message:', {
+          console.log(`   From: ${msg.handle?.address}`);
+          console.log(`   Message: ${msg.text?.substring(0, 100)}`);
+          console.log(`   GUID: ${msg.guid}`);
+          console.log(`   isFromMe: ${msg.isFromMe}`);
+          
+          messageData = {
+            guid: msg.guid,
+            text: msg.text || '',
+            timestamp: Math.floor(msg.dateCreated / 1000),
+            isFromMe: msg.isFromMe || false,
+            sender: msg.handle?.address,
+            senderName: msg.handle?.name,
+            senderService: msg.handle?.service,
+            recipient: msg.chats?.[0]?.recipient,
+            chatGuid: msg.chats?.[0]?.guid,
+            chatName: msg.chats?.[0]?.displayName,
+            attachments: msg.attachments || [],
+            isDelivered: msg.isDelivered,
+            dateDelivered: msg.dateDelivered,
+            dateRead: msg.dateRead,
+            partCount: msg.partCount,
+            originalROWID: msg.originalROWID
+          };
+        } else {
+          // Fallback for test webhooks or direct format
+          messageData = webhookData;
+          isFromMe = messageData.isFromMe === true;
+          
+          if (isFromMe) {
+            console.log(`⏭️ Skipping outbound message (sent by me) in fallback format`);
+            return;
+          }
+        }
+        
+        // Only process if it's an incoming message (not sent by us)
+        if (!isFromMe && messageData && messageData.sender) {
+          console.log('✅ Processing incoming message:', {
             guid: messageData.guid,
             from: messageData.sender,
             text: messageData.text?.substring(0, 50)
           });
           
           await processIncomingMessage(messageData, 'BLUEBUBBLES');
-          
-        } catch (error) {
-          console.error('❌ Error processing BlueBubbles message:', error);
+        } else if (isFromMe) {
+          console.log(`⏭️ Skipping outbound message (sent by system)`);
+        } else {
+          console.log(`⚠️ Unknown webhook format, skipping`);
         }
-      });
-      
-    } catch (error) {
-      console.error('❌ Error in BlueBubbles webhook:', error);
-      res.status(200).json({ received: true, error: error.message });
-    }
-  });
+        
+      } catch (error) {
+        console.error('❌ Error processing BlueBubbles message:', error);
+      }
+    });
+    
+  } catch (error) {
+    console.error('❌ Error in BlueBubbles webhook:', error);
+    res.status(200).json({ received: true, error: error.message });
+  }
+})
 
   // Message status updates (delivered, read, etc.)
   app.post('/bluebubbles/message/status', async (req, res) => {
