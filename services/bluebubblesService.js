@@ -11,95 +11,60 @@ class BlueBubblesService {
     console.log(`   Server URL: ${serverUrl}`);
     console.log(`   Password: ${password ? '***' + password.slice(-4) : 'MISSING'}`);
     
-    // Create axios instance with increased timeout (60 seconds)
     this.client = axios.create({
       baseURL: serverUrl,
       headers: {
         'Content-Type': 'application/json'
       },
-      timeout: 60000,  // Increased from 30000 to 60000 (60 seconds)
-      // Add retry logic for network issues
-      maxRetries: 2,
-      retryDelay: 1000
+      timeout: 60000  // 60 seconds timeout
     });
-    
-    // Add request interceptor for debugging
-    this.client.interceptors.request.use(request => {
-      console.log(`\n📤 BlueBubbles Request:`);
-      console.log(`   URL: ${request.method.toUpperCase()} ${request.url}`);
-      console.log(`   Timeout: ${request.timeout}ms`);
-      if (request.data && !(request.data instanceof FormData)) {
-        console.log(`   Body:`, JSON.stringify(request.data, null, 2).substring(0, 500));
-      }
-      return request;
-    });
-    
-    // Add response interceptor for debugging
-    this.client.interceptors.response.use(
-      response => {
-        console.log(`📥 BlueBubbles Response: ${response.status} (${response.statusText})`);
-        return response;
-      },
-      error => {
-        if (error.code === 'ECONNABORTED') {
-          console.error(`❌ BlueBubbles Request TIMEOUT after ${error.config?.timeout || 'unknown'}ms`);
-        } else if (error.response) {
-          console.error(`❌ BlueBubbles Error: ${error.response.status} - ${error.response.statusText}`);
-          console.error(`   Data:`, error.response.data);
-        } else if (error.request) {
-          console.error(`❌ BlueBubbles No Response: ${error.message}`);
-        } else {
-          console.error(`❌ BlueBubbles Error: ${error.message}`);
-        }
-        return Promise.reject(error);
-      }
-    );
   }
 
   /**
-   * Generate a chatGuid for a phone number or email
-   * Format: any;-;+phone OR any;-;email
+   * Generate the correct chatGuid format
+   * For iMessage: "iMessage;+;+phone" or "iMessage;+;email@domain.com"
+   * For SMS: "SMS;-;+phone" or "any;-;+phone"
    */
-  generateChatGuid(address) {
-    // Ensure phone numbers have + prefix
-    let formattedAddress = address;
+  generateChatGuid(address, forceSMS = false) {
+    // Clean the address
+    let cleanAddress = address;
     if (address && !address.includes('@') && !address.startsWith('+')) {
-      formattedAddress = `+${address.replace(/\D/g, '')}`;
+      cleanAddress = `+${address.replace(/\D/g, '')}`;
     }
-    return `any;-;${formattedAddress}`;
+    
+    // Use iMessage format by default, fallback to SMS format if needed
+    if (forceSMS) {
+      return `SMS;-;${cleanAddress}`;
+    }
+    return `iMessage;+;${cleanAddress}`;
   }
 
   /**
-   * Send a text iMessage
+   * Send a text iMessage using the correct AppleScript method
    */
-  async sendMessage({ to, from, message, effectId }) {
+  async sendMessage({ to, from, message, effectId, replyToGuid }) {
     try {
       console.log(`\n📱 Sending iMessage via BlueBubbles API:`);
       console.log(`   To: ${to}`);
       console.log(`   Message: ${message?.substring(0, 100)}`);
-      console.log(`   Timeout: ${this.client.defaults.timeout}ms`);
       
       const chatGuid = this.generateChatGuid(to);
-      const tempGuid = `temp-${uuidv4()}`;
+      const tempGuid = uuidv4();
       
+      // Build the payload according to the correct format
       const payload = {
         chatGuid: chatGuid,
         tempGuid: tempGuid,
-        message: message
+        message: message,
+        method: "apple-script",  // Critical: must be apple-script
+        subject: "",
+        effectId: effectId || "",
+        selectedMessageGuid: replyToGuid || ""
       };
-      
-      // Add optional from if provided (your iMessage account)
-      if (from) {
-        payload.from = from;
-      }
-      
-      // Add effect if provided (slam, loud, gentle, invisible ink)
-      if (effectId) {
-        payload.effectId = effectId;
-      }
       
       console.log(`   Chat GUID: ${chatGuid}`);
       console.log(`   Temp GUID: ${tempGuid}`);
+      console.log(`   Method: apple-script`);
       
       const response = await this.client.post(
         `/api/v1/message/text?password=${encodeURIComponent(this.password)}`,
@@ -125,24 +90,24 @@ class BlueBubblesService {
   /**
    * Send an iMessage with attachment
    */
-  async sendAttachment({ to, from, message, mediaUrl, effectId }) {
+  async sendAttachment({ to, from, message, mediaUrl, effectId, replyToGuid }) {
     try {
       console.log(`📸 Sending iMessage with attachment:`);
       console.log(`   To: ${to}`);
       console.log(`   Media URL: ${mediaUrl}`);
-      console.log(`   Timeout: ${this.client.defaults.timeout}ms`);
       
       const chatGuid = this.generateChatGuid(to);
-      const tempGuid = `temp-${uuidv4()}`;
+      const tempGuid = uuidv4();
       
       // For attachments, use FormData
       const FormData = (await import('form-data')).default;
       const formData = new FormData();
       formData.append('chatGuid', chatGuid);
       formData.append('tempGuid', tempGuid);
-      if (message) formData.append('message', message);
-      if (from) formData.append('from', from);
+      formData.append('message', message || '');
+      formData.append('method', 'apple-script');
       if (effectId) formData.append('effectId', effectId);
+      if (replyToGuid) formData.append('selectedMessageGuid', replyToGuid);
       
       // Handle attachment
       if (mediaUrl.startsWith('http')) {
@@ -181,6 +146,48 @@ class BlueBubblesService {
     } catch (error) {
       console.error('BlueBubbles attachment error:', error.message);
       throw new Error(`Failed to send iMessage with attachment: ${error.message}`);
+    }
+  }
+
+  /**
+   * Send a message as SMS (force SMS mode)
+   */
+  async sendSMS({ to, from, message }) {
+    try {
+      console.log(`\n📱 Sending SMS via BlueBubbles API:`);
+      console.log(`   To: ${to}`);
+      console.log(`   Message: ${message?.substring(0, 100)}`);
+      
+      // Use SMS format for chatGuid
+      const chatGuid = this.generateChatGuid(to, true);  // forceSMS = true
+      const tempGuid = uuidv4();
+      
+      const payload = {
+        chatGuid: chatGuid,
+        tempGuid: tempGuid,
+        message: message,
+        method: "apple-script",
+        subject: "",
+        effectId: "",
+        selectedMessageGuid: ""
+      };
+      
+      console.log(`   Chat GUID (SMS): ${chatGuid}`);
+      
+      const response = await this.client.post(
+        `/api/v1/message/text?password=${encodeURIComponent(this.password)}`,
+        payload
+      );
+      
+      console.log(`✅ SMS sent! Response:`, response.data);
+      return {
+        success: true,
+        guid: response.data.data?.guid,
+        timestamp: new Date().toISOString()
+      };
+    } catch (error) {
+      console.error('BlueBubbles SMS error:', error.message);
+      throw new Error(`Failed to send SMS: ${error.message}`);
     }
   }
 
@@ -235,27 +242,6 @@ class BlueBubblesService {
     } catch (error) {
       console.error('Failed to get recent messages:', error.message);
       return [];
-    }
-  }
-
-  /**
-   * Find a chat GUID for a phone number/email
-   */
-  async findChatByAddress(address) {
-    try {
-      const chats = await this.queryChats(100);
-      const targetGuid = this.generateChatGuid(address);
-      
-      const chat = chats.find(c => 
-        c.guid === targetGuid || 
-        c.chatIdentifier === address ||
-        c.participants?.some(p => p.address === address)
-      );
-      
-      return chat?.guid || null;
-    } catch (error) {
-      console.error('Failed to find chat:', error.message);
-      return null;
     }
   }
 
