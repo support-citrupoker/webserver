@@ -18,14 +18,14 @@ setInterval(() => {
       processedExpiry.delete(id);
     }
   }
-  
+
   // Clean up iMessage cache
   for (const [phone, data] of iMessageCache.entries()) {
     if (now - data.timestamp > CACHE_DURATION) {
       iMessageCache.delete(phone);
     }
   }
-  
+
   console.log(`🧹 Cleaned up deduplication cache. Current size: ${processedEvents.size}`);
   console.log(`📱 iMessage cache size: ${iMessageCache.size}`);
 }, 3600000);
@@ -92,18 +92,18 @@ export default (app, tallbobService, ghlService, messageController, bluebubblesS
     // Create unique event ID based on provider and message data
     let eventId;
     if (provider === 'BLUEBUBBLES') {
-      eventId = messageData.guid || messageData.messageGuid || 
-                `${messageData.sender}_${messageData.timestamp}`;
+      eventId = messageData.guid || messageData.messageGuid ||
+        `${messageData.sender}_${messageData.timestamp}`;
     } else {
-      eventId = messageData.eventID || messageData.id || 
-                `${messageData.recipient}_${messageData.timestamp}`;
+      eventId = messageData.eventID || messageData.id ||
+        `${messageData.recipient}_${messageData.timestamp}`;
     }
-    
+
     if (!eventId) {
       console.log('⚠️ No event ID found, using fallback');
       eventId = `${provider}_${Date.now()}_${Math.random()}`;
     }
-    
+
     // Add provider prefix to event ID to avoid conflicts between providers
     const uniqueEventId = `${provider}_${eventId}`;
 
@@ -132,7 +132,7 @@ export default (app, tallbobService, ghlService, messageController, bluebubblesS
 
     // Extract data based on provider
     let customerPhone, providerNumber, messageText, timestamp, media, contactID, campaignID, reference;
-    
+
     if (provider === 'BLUEBUBBLES') {
       // BlueBubbles webhook format
       customerPhone = messageData.sender || messageData.from;
@@ -143,7 +143,7 @@ export default (app, tallbobService, ghlService, messageController, bluebubblesS
       contactID = messageData.contactId;
       campaignID = messageData.campaignId;
       reference = messageData.guid || messageData.reference;
-      
+
       // Format phone numbers if they look like phone numbers (not emails)
       if (customerPhone && !customerPhone.includes('@') && customerPhone.match(/\d/)) {
         customerPhone = `+${customerPhone.replace(/\D/g, '')}`;
@@ -151,7 +151,7 @@ export default (app, tallbobService, ghlService, messageController, bluebubblesS
       if (providerNumber && !providerNumber.includes('@') && providerNumber.match(/\d/)) {
         providerNumber = `+${providerNumber.replace(/\D/g, '')}`;
       }
-      
+
       console.log('📱 BlueBubbles extracted:', {
         customerPhone,
         providerNumber,
@@ -185,7 +185,7 @@ export default (app, tallbobService, ghlService, messageController, bluebubblesS
     }
 
     const receivedDate = timestamp ? new Date(timestamp * 1000).toISOString() : new Date().toISOString();
-    
+
     // Determine message type for GHL
     const messageType = provider === 'BLUEBUBBLES' ? 'iMessage' : (provider === 'MMS' ? 'MMS' : 'SMS');
 
@@ -194,7 +194,7 @@ export default (app, tallbobService, ghlService, messageController, bluebubblesS
       let hasiMessage = false;
       let imessageCheckFailed = false;
       let imessageService = null;
-      
+
       // Only check iMessage if BlueBubbles service is configured
       if (bluebubblesService && customerPhone && !customerPhone.includes('@')) {
         if (provider === 'BLUEBUBBLES') {
@@ -202,13 +202,13 @@ export default (app, tallbobService, ghlService, messageController, bluebubblesS
           hasiMessage = true;
           imessageService = messageData.senderService || 'iMessage';
           console.log(`✅ ${customerPhone} has iMessage (confirmed by incoming iMessage)`);
-          
+
           // Cache the result
           await setCachediMessageStatus(customerPhone, true, imessageService);
         } else {
           // Check if SMS contact has iMessage (check cache first)
           const cached = await getCachediMessageStatus(customerPhone);
-          
+
           if (cached !== null) {
             hasiMessage = cached.hasiMessage;
             imessageService = cached.service;
@@ -220,7 +220,7 @@ export default (app, tallbobService, ghlService, messageController, bluebubblesS
               hasiMessage = availability.hasiMessage;
               imessageService = availability.service;
               console.log(`📱 iMessage status for ${customerPhone}: ${hasiMessage ? 'YES ✅' : 'NO ❌'}`);
-              
+
               // Cache the result
               await setCachediMessageStatus(customerPhone, hasiMessage, imessageService);
             } catch (error) {
@@ -235,7 +235,7 @@ export default (app, tallbobService, ghlService, messageController, bluebubblesS
         imessageService = 'iMessage (email)';
         console.log(`📧 ${customerPhone} is an email address, assuming iMessage capability`);
       }
-      
+
       // Find or create contact with iMessage data
       console.log(`👤 Upserting contact with identifier: ${customerPhone}`);
       const contactData = {
@@ -263,22 +263,22 @@ export default (app, tallbobService, ghlService, messageController, bluebubblesS
           ...(provider === 'BLUEBUBBLES' ? [{ key: 'imessage_guid', value: reference || '' }] : [])
         ]
       };
-      
+
       // Add email for BlueBubbles if it's an email address
       if (provider === 'BLUEBUBBLES' && customerPhone && customerPhone.includes('@')) {
         contactData.email = customerPhone;
       }
-      
+
       const { contact, action } = await ghlService.upsertContact(contactData, locationId);
       console.log(`✅ Contact ${action}: ${contact.id}`);
-      
+
       // Add note about iMessage capability
       if (hasiMessage || imessageCheckFailed) {
         try {
-          const noteContent = hasiMessage 
+          const noteContent = hasiMessage
             ? `✅ iMessage capable detected on ${new Date().toISOString()}\nPhone: ${customerPhone}\nService: ${imessageService || 'iMessage'}`
             : `⚠️ iMessage check failed on ${new Date().toISOString()}\nPhone: ${customerPhone}\nWill retry on next message`;
-          
+
           await ghlService.addNote(contact.id, noteContent, locationId);
           console.log(`📝 Added iMessage note to contact ${contact.id}`);
         } catch (noteError) {
@@ -289,8 +289,8 @@ export default (app, tallbobService, ghlService, messageController, bluebubblesS
       // Get or create conversation
       console.log(`💬 Getting/creating conversation for contact: ${contact.id}`);
       const { conversation } = await ghlService.getOrCreateConversation(
-        contact.id, 
-        messageType, 
+        contact.id,
+        messageType,
         locationId
       );
       console.log(`✅ Conversation: ${conversation.id}`);
@@ -310,7 +310,7 @@ export default (app, tallbobService, ghlService, messageController, bluebubblesS
 
       // Add message to conversation
       console.log(`📝 Adding ${messageType} message to conversation: ${conversation.id}`);
-      
+
       const messagePayload = {
         contactId: contact.id,
         body: messageText || (provider === 'MMS' ? 'MMS message' : ''),
@@ -333,7 +333,7 @@ export default (app, tallbobService, ghlService, messageController, bluebubblesS
           imessageChecked: !imessageCheckFailed
         }
       };
-      
+
       await ghlService.addMessageToConversation(conversation.id, messagePayload, locationId);
 
       // Mark as processed (only after successful processing)
@@ -354,120 +354,179 @@ export default (app, tallbobService, ghlService, messageController, bluebubblesS
   // Main incoming message webhook
   // ==================== BLUEBUBBLES WEBHOOK ROUTES ====================
 
-// Main incoming message webhook
-app.post('/bluebubbles/incoming', async (req, res) => {
-  try {
-    const webhookData = req.body;
-    
-    console.log('📱 Received BlueBubbles webhook');
-    
-    // Verify password
-    const apiPassword = req.query.password || req.headers['x-bluebubbles-password'];
-    if (process.env.BLUEBUBBLES_PASSWORD && apiPassword !== process.env.BLUEBUBBLES_PASSWORD) {
-      console.error('❌ Invalid BlueBubbles webhook password');
-      return res.status(401).json({ error: 'Unauthorized' });
-    }
-    
-    // Acknowledge immediately
-    res.status(200).json({ received: true, timestamp: new Date().toISOString() });
-    
-    // Process asynchronously
-    setImmediate(async () => {
-      try {
-        let messageData;
-        let isFromMe = false;
-        
-        // Handle BlueBubbles webhook format: { type: 'new-message', data: {...} }
-        if (webhookData.type === 'new-message' && webhookData.data) {
-          const msg = webhookData.data;
-          
-          // ⭐ CRITICAL: Skip messages sent by your own Mac
-          isFromMe = msg.isFromMe === true;
-          
-          if (isFromMe) {
-            console.log(`⏭️ Skipping outbound message (sent by me): ${msg.text?.substring(0, 50)}`);
-            return;
-          }
-          
-          console.log(`   From: ${msg.handle?.address}`);
-          console.log(`   Message: ${msg.text?.substring(0, 100)}`);
-          console.log(`   GUID: ${msg.guid}`);
-          console.log(`   isFromMe: ${msg.isFromMe}`);
-          
-          messageData = {
-            guid: msg.guid,
-            text: msg.text || '',
-            timestamp: Math.floor(msg.dateCreated / 1000),
-            isFromMe: msg.isFromMe || false,
-            sender: msg.handle?.address,
-            senderName: msg.handle?.name,
-            senderService: msg.handle?.service,
-            recipient: msg.chats?.[0]?.recipient,
-            chatGuid: msg.chats?.[0]?.guid,
-            chatName: msg.chats?.[0]?.displayName,
-            attachments: msg.attachments || [],
-            isDelivered: msg.isDelivered,
-            dateDelivered: msg.dateDelivered,
-            dateRead: msg.dateRead,
-            partCount: msg.partCount,
-            originalROWID: msg.originalROWID
-          };
-        } else {
-          // Fallback for test webhooks or direct format
-          messageData = webhookData;
-          isFromMe = messageData.isFromMe === true;
-          
-          if (isFromMe) {
-            console.log(`⏭️ Skipping outbound message (sent by me) in fallback format`);
-            return;
-          }
-        }
-        
-        // Only process if it's an incoming message (not sent by us)
-        if (!isFromMe && messageData && messageData.sender) {
-          console.log('✅ Processing incoming message:', {
-            guid: messageData.guid,
-            from: messageData.sender,
-            text: messageData.text?.substring(0, 50)
-          });
-          
-          await processIncomingMessage(messageData, 'BLUEBUBBLES');
-        } else if (isFromMe) {
-          console.log(`⏭️ Skipping outbound message (sent by system)`);
-        } else {
-          console.log(`⚠️ Unknown webhook format, skipping`);
-        }
-        
-      } catch (error) {
-        console.error('❌ Error processing BlueBubbles message:', error);
+  // Main incoming message webhook
+  app.post('/bluebubbles/incoming', async (req, res) => {
+    try {
+      const webhookData = req.body;
+
+      console.log('📱 Received BlueBubbles webhook');
+
+      // Verify password
+      const apiPassword = req.query.password || req.headers['x-bluebubbles-password'];
+      if (process.env.BLUEBUBBLES_PASSWORD && apiPassword !== process.env.BLUEBUBBLES_PASSWORD) {
+        console.error('❌ Invalid BlueBubbles webhook password');
+        return res.status(401).json({ error: 'Unauthorized' });
       }
-    });
-    
-  } catch (error) {
-    console.error('❌ Error in BlueBubbles webhook:', error);
-    res.status(200).json({ received: true, error: error.message });
-  }
-})
+
+      // Acknowledge immediately
+      res.status(200).json({ received: true, timestamp: new Date().toISOString() });
+
+      // Process asynchronously
+      setImmediate(async () => {
+        try {
+          let messageData;
+          let isFromMe = false;
+
+          // Handle BlueBubbles webhook format: { type: 'new-message', data: {...} }
+          if (webhookData.type === 'new-message' && webhookData.data) {
+            const msg = webhookData.data;
+
+            // ⭐ CRITICAL: Skip messages sent by your own Mac
+            isFromMe = msg.isFromMe === true;
+
+            if (isFromMe) {
+              console.log(`⏭️ Skipping outbound message (sent by me): ${msg.text?.substring(0, 50)}`);
+              return;
+            }
+
+            console.log(`   From: ${msg.handle?.address}`);
+            console.log(`   Message: ${msg.text?.substring(0, 100)}`);
+            console.log(`   GUID: ${msg.guid}`);
+            console.log(`   isFromMe: ${msg.isFromMe}`);
+
+            messageData = {
+              guid: msg.guid,
+              text: msg.text || '',
+              timestamp: Math.floor(msg.dateCreated / 1000),
+              isFromMe: msg.isFromMe || false,
+              sender: msg.handle?.address,
+              senderName: msg.handle?.name,
+              senderService: msg.handle?.service,
+              recipient: msg.chats?.[0]?.recipient,
+              chatGuid: msg.chats?.[0]?.guid,
+              chatName: msg.chats?.[0]?.displayName,
+              attachments: msg.attachments || [],
+              isDelivered: msg.isDelivered,
+              dateDelivered: msg.dateDelivered,
+              dateRead: msg.dateRead,
+              partCount: msg.partCount,
+              originalROWID: msg.originalROWID
+            };
+          } else {
+            // Fallback for test webhooks or direct format
+            messageData = webhookData;
+            isFromMe = messageData.isFromMe === true;
+
+            if (isFromMe) {
+              console.log(`⏭️ Skipping outbound message (sent by me) in fallback format`);
+              return;
+            }
+          }
+
+          // Only process if it's an incoming message (not sent by us)
+          if (!isFromMe && messageData && messageData.sender) {
+            console.log('✅ Processing incoming message:', {
+              guid: messageData.guid,
+              from: messageData.sender,
+              text: messageData.text?.substring(0, 50)
+            });
+
+            await processIncomingMessage(messageData, 'BLUEBUBBLES');
+          } else if (isFromMe) {
+            console.log(`⏭️ Skipping outbound message (sent by system)`);
+          } else {
+            console.log(`⚠️ Unknown webhook format, skipping`);
+          }
+
+        } catch (error) {
+          console.error('❌ Error processing BlueBubbles message:', error);
+        }
+      });
+
+    } catch (error) {
+      console.error('❌ Error in BlueBubbles webhook:', error);
+      res.status(200).json({ received: true, error: error.message });
+    }
+  })
+
+
+  // Add to index.js
+  app.get('/test/contact-activity/:phone', async (req, res) => {
+    try {
+      const { phone } = req.params;
+
+      // Format phone
+      const cleanPhone = phone.replace(/\D/g, '');
+      const formattedPhone = `+${cleanPhone}`;
+
+      // Find contact
+      const contacts = await ghlService.searchContactsByPhone(formattedPhone);
+
+      if (!contacts || contacts.length === 0) {
+        return res.json({ success: false, error: 'Contact not found' });
+      }
+
+      const contact = contacts[0];
+
+      // Get conversations
+      const conversations = await ghlService.searchConversations({
+        contactId: contact.id,
+        limit: 5
+      });
+
+      // Get messages from the first conversation
+      let messages = [];
+      if (conversations && conversations.length > 0) {
+        messages = await ghlService.getConversationMessages(conversations[0].id, ghlService.locationId, 10);
+      }
+
+      res.json({
+        success: true,
+        contact: {
+          id: contact.id,
+          phone: contact.phone,
+          lastMessageDate: contact.lastMessageDate,
+          tags: contact.tags
+        },
+        conversations: conversations.map(c => ({
+          id: c.id,
+          type: c.type,
+          lastMessageAt: c.lastMessageAt,
+          lastInternalComment: c.lastInternalComment
+        })),
+        messages: messages.map(m => ({
+          id: m.id,
+          body: m.body,
+          direction: m.direction,
+          date: m.date,
+          provider: m.provider
+        }))
+      });
+
+    } catch (error) {
+      res.status(500).json({ error: error.message });
+    }
+  })
 
   // Message status updates (delivered, read, etc.)
   app.post('/bluebubbles/message/status', async (req, res) => {
     try {
       const statusData = req.body;
       console.log('📊 BlueBubbles message status update:', statusData);
-      
+
       const apiPassword = req.query.password || req.headers['x-bluebubbles-password'];
       if (process.env.BLUEBUBBLES_PASSWORD && apiPassword !== process.env.BLUEBUBBLES_PASSWORD) {
         return res.status(401).json({ error: 'Unauthorized' });
       }
-      
+
       res.status(200).json({ received: true });
-      
+
       setImmediate(async () => {
         const { messageGuid, status, timestamp } = statusData;
         console.log(`📊 Message ${messageGuid} status: ${status} at ${timestamp}`);
         // Optional: Update message status in GHL
       });
-      
+
     } catch (error) {
       console.error('❌ Error in BlueBubbles status webhook:', error);
       res.status(200).json({ received: true });
@@ -479,21 +538,21 @@ app.post('/bluebubbles/incoming', async (req, res) => {
     try {
       const typingData = req.body;
       console.log('⌨️ BlueBubbles typing indicator:', typingData);
-      
+
       const apiPassword = req.query.password || req.headers['x-bluebubbles-password'];
       if (process.env.BLUEBUBBLES_PASSWORD && apiPassword !== process.env.BLUEBUBBLES_PASSWORD) {
         return res.status(401).json({ error: 'Unauthorized' });
       }
-      
+
       res.status(200).json({ received: true });
-      
+
       setImmediate(async () => {
         const { chatGuid, sender, isTyping } = typingData;
         if (isTyping) {
           console.log(`⌨️ ${sender} is typing in chat ${chatGuid}`);
         }
       });
-      
+
     } catch (error) {
       console.error('❌ Error in BlueBubbles typing webhook:', error);
       res.status(200).json({ received: true });
@@ -505,19 +564,19 @@ app.post('/bluebubbles/incoming', async (req, res) => {
     try {
       const reactionData = req.body;
       console.log('💬 BlueBubbles reaction:', reactionData);
-      
+
       const apiPassword = req.query.password || req.headers['x-bluebubbles-password'];
       if (process.env.BLUEBUBBLES_PASSWORD && apiPassword !== process.env.BLUEBUBBLES_PASSWORD) {
         return res.status(401).json({ error: 'Unauthorized' });
       }
-      
+
       res.status(200).json({ received: true });
-      
+
       setImmediate(async () => {
         const { messageGuid, reaction, sender } = reactionData;
         console.log(`💬 Reaction ${reaction} on message ${messageGuid} from ${sender}`);
       });
-      
+
     } catch (error) {
       console.error('❌ Error in BlueBubbles reaction webhook:', error);
       res.status(200).json({ received: true });
@@ -525,25 +584,25 @@ app.post('/bluebubbles/incoming', async (req, res) => {
   });
 
   // ==================== iMESSAGE CHECK ENDPOINT ====================
-  
+
   // Check iMessage availability for a phone number
   app.get('/api/check-imessage/:phone', async (req, res) => {
     try {
       const { phone } = req.params;
-      
+
       if (!phone) {
         return res.status(400).json({ success: false, error: 'Phone number required' });
       }
-      
+
       if (!bluebubblesService) {
-        return res.status(400).json({ 
-          success: false, 
-          error: 'BlueBubbles service not configured' 
+        return res.status(400).json({
+          success: false,
+          error: 'BlueBubbles service not configured'
         });
       }
-      
+
       const formattedPhone = phone.startsWith('+') ? phone : `+${phone.replace(/\D/g, '')}`;
-      
+
       // Check cache first
       const cached = await getCachediMessageStatus(formattedPhone);
       if (cached) {
@@ -556,13 +615,13 @@ app.post('/bluebubbles/incoming', async (req, res) => {
           cachedAt: new Date(cached.timestamp).toISOString()
         });
       }
-      
+
       // Check via BlueBubbles
       const result = await bluebubblesService.checkiMessageAvailability(formattedPhone);
-      
+
       // Cache the result
       await setCachediMessageStatus(formattedPhone, result.hasiMessage, result.service);
-      
+
       res.json({
         success: true,
         phone: formattedPhone,
@@ -571,37 +630,37 @@ app.post('/bluebubbles/incoming', async (req, res) => {
         source: 'api',
         timestamp: new Date().toISOString()
       });
-      
+
     } catch (error) {
       console.error('Error checking iMessage:', error);
       res.status(500).json({ success: false, error: error.message });
     }
   });
-  
+
   // Batch check multiple phone numbers
   app.post('/api/check-imessage/batch', async (req, res) => {
     try {
       const { phones } = req.body;
-      
+
       if (!phones || !Array.isArray(phones)) {
-        return res.status(400).json({ 
-          success: false, 
-          error: 'Please provide an array of phone numbers' 
+        return res.status(400).json({
+          success: false,
+          error: 'Please provide an array of phone numbers'
         });
       }
-      
+
       if (!bluebubblesService) {
-        return res.status(400).json({ 
-          success: false, 
-          error: 'BlueBubbles service not configured' 
+        return res.status(400).json({
+          success: false,
+          error: 'BlueBubbles service not configured'
         });
       }
-      
+
       const results = [];
-      
+
       for (const phone of phones) {
         const formattedPhone = phone.startsWith('+') ? phone : `+${phone.replace(/\D/g, '')}`;
-        
+
         // Check cache first
         const cached = await getCachediMessageStatus(formattedPhone);
         if (cached) {
@@ -613,7 +672,7 @@ app.post('/bluebubbles/incoming', async (req, res) => {
           });
           continue;
         }
-        
+
         // Check via BlueBubbles
         try {
           const result = await bluebubblesService.checkiMessageAvailability(formattedPhone);
@@ -633,11 +692,11 @@ app.post('/bluebubbles/incoming', async (req, res) => {
             error: error.message
           });
         }
-        
+
         // Small delay to avoid rate limiting
         await new Promise(resolve => setTimeout(resolve, 200));
       }
-      
+
       res.json({
         success: true,
         results: results,
@@ -648,13 +707,13 @@ app.post('/bluebubbles/incoming', async (req, res) => {
           errors: results.filter(r => r.source === 'error').length
         }
       });
-      
+
     } catch (error) {
       console.error('Error batch checking iMessage:', error);
       res.status(500).json({ success: false, error: error.message });
     }
   });
-  
+
   // Get iMessage cache stats
   app.get('/api/imessage-cache-stats', async (req, res) => {
     const stats = {
@@ -667,7 +726,7 @@ app.post('/bluebubbles/incoming', async (req, res) => {
         expiresAt: new Date(data.timestamp + CACHE_DURATION).toISOString()
       }))
     };
-    
+
     res.json({
       success: true,
       stats
@@ -680,13 +739,13 @@ app.post('/bluebubbles/incoming', async (req, res) => {
     try {
       const messageData = req.body;
       console.log('📩 Received Tall Bob SMS webhook:', messageData);
-      
+
       res.status(200).json({ received: true, timestamp: new Date().toISOString() });
-      
+
       setImmediate(async () => {
         await processIncomingMessage(messageData, 'SMS');
       });
-      
+
     } catch (error) {
       console.error('❌ Error in SMS webhook:', error);
       res.status(200).json({ received: true, error: error.message });
@@ -697,13 +756,13 @@ app.post('/bluebubbles/incoming', async (req, res) => {
     try {
       const messageData = req.body;
       console.log('📩 Received Tall Bob MMS webhook:', messageData);
-      
+
       res.status(200).json({ received: true, timestamp: new Date().toISOString() });
-      
+
       setImmediate(async () => {
         await processIncomingMessage(messageData, 'MMS');
       });
-      
+
     } catch (error) {
       console.error('❌ Error in MMS webhook:', error);
       res.status(200).json({ received: true, error: error.message });
@@ -718,23 +777,23 @@ app.post('/bluebubbles/incoming', async (req, res) => {
       console.log('📱 Send BlueBubbles iMessage request:', { to, from, message: message?.substring(0, 50), mediaUrl, contactId });
 
       if (!to || !from || !message) {
-        return res.status(400).json({ 
-          success: false, 
-          error: 'Missing required fields: to, from, and message are required' 
+        return res.status(400).json({
+          success: false,
+          error: 'Missing required fields: to, from, and message are required'
         });
       }
 
       if (!bluebubblesService) {
-        return res.status(500).json({ 
-          success: false, 
-          error: 'BlueBubbles service not configured' 
+        return res.status(500).json({
+          success: false,
+          error: 'BlueBubbles service not configured'
         });
       }
 
       // Check iMessage availability if not forced to SMS
       let useiMessage = false;
       let routingReason = '';
-      
+
       if (forceSMS) {
         useiMessage = false;
         routingReason = 'Forced SMS by request';
@@ -742,7 +801,7 @@ app.post('/bluebubbles/incoming', async (req, res) => {
         // Check if recipient has iMessage
         const formattedTo = to.startsWith('+') ? to : `+${to.replace(/\D/g, '')}`;
         const cached = await getCachediMessageStatus(formattedTo);
-        
+
         if (cached) {
           useiMessage = cached.hasiMessage;
           routingReason = useiMessage ? 'Cached: Recipient has iMessage' : 'Cached: Recipient does not have iMessage';
@@ -761,9 +820,9 @@ app.post('/bluebubbles/incoming', async (req, res) => {
           }
         }
       }
-      
+
       console.log(`📱 Routing decision: ${useiMessage ? 'iMessage' : 'SMS'} - ${routingReason}`);
-      
+
       let result;
       if (useiMessage) {
         // Send via iMessage (BlueBubbles)
@@ -800,7 +859,7 @@ app.post('/bluebubbles/incoming', async (req, res) => {
         try {
           const targetLocationId = locationId || ghlService.locationId;
           let conversation;
-          
+
           if (conversationId) {
             conversation = { id: conversationId };
           } else if (contactId) {
@@ -859,9 +918,9 @@ app.post('/bluebubbles/incoming', async (req, res) => {
       console.log('📤 Send Tall Bob message request:', { to, from, message: message?.substring(0, 50), mediaUrl, contactId });
 
       if (!to || !from || !message) {
-        return res.status(400).json({ 
-          success: false, 
-          error: 'Missing required fields: to, from, and message are required' 
+        return res.status(400).json({
+          success: false,
+          error: 'Missing required fields: to, from, and message are required'
         });
       }
 
@@ -888,7 +947,7 @@ app.post('/bluebubbles/incoming', async (req, res) => {
         try {
           const targetLocationId = locationId || ghlService.locationId;
           let conversation;
-          
+
           if (conversationId) {
             conversation = { id: conversationId };
           } else if (contactId) {
@@ -939,32 +998,32 @@ app.post('/bluebubbles/incoming', async (req, res) => {
     try {
       const webhookData = req.body;
       console.log('📨 Received GHL webhook for BlueBubbles:', webhookData);
-      
+
       res.status(200).json({ received: true });
-      
+
       setImmediate(async () => {
         try {
           const { contactId, locationId, message, to, from, mediaUrl, conversationId, forceSMS } = webhookData;
-          
+
           if (!to || !from || !message) {
             console.error('❌ Missing required fields in GHL webhook');
             return;
           }
-          
+
           const response = await fetch(`${process.env.APP_URL || 'http://localhost:3000'}/bluebubbles/send-message`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ to, from, message, mediaUrl, contactId, locationId, conversationId, forceSMS })
           });
-          
+
           const result = await response.json();
           console.log('✅ Message sent via BlueBubbles:', result);
-          
+
         } catch (error) {
           console.error('❌ Error processing GHL webhook:', error);
         }
       });
-      
+
     } catch (error) {
       console.error('❌ Error in GHL webhook handler:', error);
       res.status(200).json({ received: true, error: error.message });
@@ -975,32 +1034,32 @@ app.post('/bluebubbles/incoming', async (req, res) => {
     try {
       const webhookData = req.body;
       console.log('📨 Received GHL webhook for Tall Bob:', webhookData);
-      
+
       res.status(200).json({ received: true });
-      
+
       setImmediate(async () => {
         try {
           const { contactId, locationId, message, to, from, mediaUrl, conversationId } = webhookData;
-          
+
           if (!to || !from || !message) {
             console.error('❌ Missing required fields in GHL webhook');
             return;
           }
-          
+
           const response = await fetch(`${process.env.APP_URL || 'http://localhost:3000'}/tallbob/send-message`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ to, from, message, mediaUrl, contactId, locationId, conversationId })
           });
-          
+
           const result = await response.json();
           console.log('✅ Message sent via Tall Bob:', result);
-          
+
         } catch (error) {
           console.error('❌ Error processing GHL webhook:', error);
         }
       });
-      
+
     } catch (error) {
       console.error('❌ Error in GHL webhook handler:', error);
       res.status(200).json({ received: true, error: error.message });
@@ -1012,10 +1071,10 @@ app.post('/bluebubbles/incoming', async (req, res) => {
   app.get('/bluebubbles/status', async (req, res) => {
     try {
       if (!bluebubblesService) {
-        return res.json({ 
-          success: false, 
+        return res.json({
+          success: false,
           error: 'BlueBubbles service not configured',
-          configured: false 
+          configured: false
         });
       }
       const status = await bluebubblesService.getStatus();
@@ -1028,9 +1087,9 @@ app.post('/bluebubbles/incoming', async (req, res) => {
   app.get('/bluebubbles/chats', async (req, res) => {
     try {
       if (!bluebubblesService) {
-        return res.status(400).json({ 
-          success: false, 
-          error: 'BlueBubbles service not configured' 
+        return res.status(400).json({
+          success: false,
+          error: 'BlueBubbles service not configured'
         });
       }
       const limit = req.query.limit ? parseInt(req.query.limit) : 20;
