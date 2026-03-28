@@ -384,63 +384,73 @@ class PollingService {
   }
   
   async sendReplyWithProvider(contact, replyText, imageUrl, locationId, contactTags = []) {
-    try {
-      console.log(`\n📤 ===== SENDING REPLY =====`);
-      console.log(`   Contact ID: ${contact.contact_id}`);
-      console.log(`   Phone: ${contact.phone_number}`);
-      console.log(`   Message: "${replyText.substring(0, 100)}"`);
-      console.log(`   Image: ${imageUrl ? 'Yes (' + imageUrl + ')' : 'No'}`);
-      console.log(`   Tags: ${contactTags.join(', ') || 'none'}`);
-      
-      const { provider, reason } = await this.getProviderForReply(contact.contact_id, locationId, contactTags);
-      
-      console.log(`   Routing: ${provider.toUpperCase()} - ${reason}`);
-      
-      let result;
-      
-      if (provider === 'bluebubbles') {
-        if (!this.bluebubblesService) {
-          console.error(`   ❌ BlueBubbles service not configured, falling back to SMS`);
-          return await this.sendViaTallBob(contact, replyText, imageUrl);
-        }
-        
-        this.trackApiCall('sendiMessage', 'sendiMessage');
-        const fromAccount = process.env.BLUEBUBBLES_IMESSAGE_ACCOUNT || contact.phone_number;
-        
-        if (imageUrl) {
-          console.log(`   📸 Sending iMessage with attachment via BlueBubbles`);
-          result = await this.bluebubblesService.sendAttachment({
-            to: contact.phone_number,
-            from: fromAccount,
-            message: replyText,
-            mediaUrl: imageUrl
-          });
-          this.stats.totalMmsSent++;
-        } else {
-          console.log(`   💬 Sending iMessage via BlueBubbles`);
-          result = await this.bluebubblesService.sendMessage({
-            to: contact.phone_number,
-            from: fromAccount,
-            message: replyText
-          });
-          this.stats.totaliMessageSent++;
-        }
-        
-        console.log(`   ✅ iMessage sent! GUID: ${result.guid}`);
-        this.stats.totalSmsSent++;
-        return { success: true, provider: 'bluebubbles', result };
-        
-      } else {
-        console.log(`   📱 Sending via Tall Bob`);
+  try {
+    console.log(`\n📤 ===== SENDING REPLY =====`);
+    console.log(`   Contact ID: ${contact.contact_id}`);
+    console.log(`   Phone: ${contact.phone_number}`);
+    console.log(`   Message: "${replyText.substring(0, 100)}"`);
+    
+    const { provider, reason } = await this.getProviderForReply(contact.contact_id, locationId, contactTags);
+    
+    console.log(`   Routing: ${provider.toUpperCase()} - ${reason}`);
+    
+    let result;
+    
+    if (provider === 'bluebubbles') {
+      if (!this.bluebubblesService) {
+        console.error(`   ❌ BlueBubbles service not configured, falling back to SMS`);
         return await this.sendViaTallBob(contact, replyText, imageUrl);
       }
       
-    } catch (error) {
-      console.error(`   ❌ Error sending reply:`, error.message);
-      console.log(`   🔄 Falling back to SMS...`);
+      this.trackApiCall('sendiMessage', 'sendiMessage');
+      
+      // Get the iMessage account to send from
+      const fromAccount = process.env.BLUEBUBBLES_IMESSAGE_ACCOUNT || contact.phone_number;
+      
+      // Try to get the chat GUID for this contact
+      let chatGuid = null;
+      try {
+        chatGuid = await this.bluebubblesService.getChatGuid(contact.phone_number);
+        if (chatGuid) {
+          console.log(`   Found chat GUID: ${chatGuid}`);
+        }
+      } catch (err) {
+        console.log(`   Could not get chat GUID: ${err.message}`);
+      }
+      
+      if (imageUrl) {
+        result = await this.bluebubblesService.sendAttachment({
+          to: contact.phone_number,
+          from: fromAccount,
+          message: replyText,
+          mediaUrl: imageUrl,
+          chatGuid: chatGuid
+        });
+        this.stats.totalMmsSent++;
+      } else {
+        result = await this.bluebubblesService.sendMessage({
+          to: contact.phone_number,
+          from: fromAccount,
+          message: replyText,
+          chatGuid: chatGuid
+        });
+        this.stats.totaliMessageSent++;
+      }
+      
+      console.log(`   ✅ iMessage sent! GUID: ${result.guid}`);
+      this.stats.totalSmsSent++;
+      return { success: true, provider: 'bluebubbles', result };
+      
+    } else {
       return await this.sendViaTallBob(contact, replyText, imageUrl);
     }
+    
+  } catch (error) {
+    console.error(`   ❌ Error sending reply:`, error.message);
+    console.log(`   🔄 Falling back to SMS...`);
+    return await this.sendViaTallBob(contact, replyText, imageUrl);
   }
+}
   
   async sendViaTallBob(contact, replyText, imageUrl) {
     try {
