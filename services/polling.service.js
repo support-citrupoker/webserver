@@ -21,6 +21,10 @@ class PollingService {
     this.delayBetweenPages = options.delayBetweenPages || 120000;
     this.syncInterval = options.syncInterval || '0 0 * * *';
     
+    // Active contact sync settings
+    this.syncOnlyActive = options.syncOnlyActive !== false; // Default to true
+    this.activeDaysThreshold = options.activeDaysThreshold || 30;
+    
     // Control initial sync delay (default to 0 for immediate sync)
     this.initialSyncDelay = options.initialSyncDelay || 0;
     
@@ -76,6 +80,10 @@ class PollingService {
     };
     
     console.log('📊 PollingService instance created');
+    console.log(`   Active contact sync: ${this.syncOnlyActive ? 'ON' : 'OFF'}`);
+    if (this.syncOnlyActive) {
+      console.log(`   Active days threshold: ${this.activeDaysThreshold} days`);
+    }
   }
 
   getApiUsageString() {
@@ -190,6 +198,10 @@ class PollingService {
     console.log(`   • Sync interval: ${this.syncInterval}`);
     console.log(`   • Sync batch size: ${this.syncBatchSize} contacts per page`);
     console.log(`   • Initial sync delay: ${this.initialSyncDelay/60000} minutes`);
+    console.log(`   • Active contact sync: ${this.syncOnlyActive ? 'ON' : 'OFF'}`);
+    if (this.syncOnlyActive) {
+      console.log(`   • Active days threshold: ${this.activeDaysThreshold} days`);
+    }
     console.log(`===============================================\n`);
     
     console.log(`📊 Rate limit monitoring enabled`);
@@ -737,7 +749,154 @@ class PollingService {
     if (this.isRateLimited() || this.isSyncing) return;
     
     this.isSyncing = true;
-    console.log(`\n🔄 CONTACT SYNC STARTED...`);
+    
+    if (this.syncOnlyActive) {
+      await this.syncActiveContactsOnly();
+    } else {
+      await this.syncAllContacts();
+    }
+    
+    this.isSyncing = false;
+  }
+
+  async syncActiveContactsOnly() {
+    console.log(`\n🔄 ACTIVE CONTACT SYNC STARTED (last ${this.activeDaysThreshold} days)...`);
+    
+    try {
+      let page = 1;
+      let hasMore = true;
+      let totalAdded = 0;
+      let skippedNoActivity = 0;
+      let totalProcessed = 0;
+      const currentContactIds = new Set();
+      
+      // Calculate cutoff date
+      const cutoffDate = new Date();
+      cutoffDate.setDate(cutoffDate.getDate() - this.activeDaysThreshold);
+      const cutoffTimestamp = cutoffDate.toISOString();
+      
+      console.log(`📅 Only syncing contacts active since: ${cutoffDate.toLocaleDateString()}`);
+      
+      while (hasMore && !this.isRateLimited()) {
+        console.log(`\n📦 Fetching page ${page}...`);
+        
+        this.trackApiCall('searchContacts', 'searchContacts');
+        
+        // Get contacts from GHL
+        const response = await this.ghlService.client.contacts.searchContactsAdvanced({
+          locationId: process.env.GHL_LOCATION_ID,
+          pageLimit: this.syncBatchSize,
+          page: page
+        });
+
+        const contacts = response.contacts || [];
+        console.log(`   Received ${contacts.length} total contacts from API`);
+        
+        for (const contact of contacts) {
+          totalProcessed++;
+          
+          // Skip contacts without phone numbers
+          if (!contact.phone) {
+            console.log(`   ⏭️ Skipping contact ${contact.id}: No phone number`);
+            continue;
+          }
+          
+          // Check if contact has recent activity
+          let hasRecentActivity = false;
+          let lastActivityDate = null;
+          
+          // Method 1: Check last message date if available
+          if (contact.lastMessageDate) {
+            lastActivityDate = new Date(contact.lastMessageDate);
+            if (lastActivityDate >= cutoffDate) {
+              hasRecentActivity = true;
+              console.log(`   ✅ Contact ${contact.id} (${contact.phone}) has recent message: ${lastActivityDate.toLocaleDateString()}`);
+            }
+          }
+          
+          // Method 2: If no lastMessageDate, check if they have any conversations
+          if (!hasRecentActivity) {
+            try {
+              const conversations = await this.ghlService.searchConversations({
+                contactId: contact.id,
+                limit: 1,
+                locationId: process.env.GHL_LOCATION_ID
+              });
+              
+              if (conversations && conversations.length > 0) {
+                const lastMessageAt = conversations[0]?.lastMessageAt;
+                if (lastMessageAt) {
+                  lastActivityDate = new Date(lastMessageAt);
+                  if (lastActivityDate >= cutoffDate) {
+                    hasRecentActivity = true;
+                    console.log(`   ✅ Contact ${contact.id} (${contact.phone}) has recent conversation: ${lastActivityDate.toLocaleDateString()}`);
+                  } else {
+                    skippedNoActivity++;
+                    console.log(`   ⏭️ Contact ${contact.id} (${contact.phone}): Last activity ${lastActivityDate.toLocaleDateString()} > ${this.activeDaysThreshold} days ago`);
+                  }
+                } else {
+                  console.log(`   ⏭️ Contact ${contact.id} (${contact.phone}): No conversation date`);
+                }
+              } else {
+                console.log(`   ⏭️ Contact ${contact.id} (${contact.phone}): No conversations found`);
+              }
+            } catch (error) {
+              console.log(`   ⚠️ Could not check conversations for ${contact.id}: ${error.message}`);
+              // Still add the contact if we can't check (better safe than sorry)
+              hasRecentActivity = true;
+            }
+          }
+          
+          // Only add contacts with recent activity
+          if (hasRecentActivity) {
+            await this.tracker.addContact(contact.id, contact.phone);
+            currentContactIds.add(contact.id);
+            totalAdded++;
+            console.log(`   ✅ Added active contact: ${contact.id} (${contact.phone})`);
+          }
+        }
+        
+        hasMore = contacts.length === this.syncBatchSize;
+        page++;
+        
+        if (hasMore) {
+          console.log(`\n⏱️ Waiting ${this.delayBetweenPages/60000} minutes before next page...`);
+          await new Promise(resolve => setTimeout(resolve, this.delayBetweenPages));
+        }
+      }
+      
+      // Remove stale contacts that no longer exist in GHL
+      console.log(`\n🧹 Checking for stale contacts...`);
+      const allTrackedContacts = await this.tracker.getContactsToCheck(10000);
+      let staleRemoved = 0;
+      let activeRetained = 0;
+      
+      for (const trackedContact of allTrackedContacts) {
+        if (!currentContactIds.has(trackedContact.contact_id)) {
+          console.log(`   🗑️ Removing stale contact: ${trackedContact.contact_id} (${trackedContact.phone_number})`);
+          await this.tracker.removeContact(trackedContact.contact_id);
+          staleRemoved++;
+        } else {
+          activeRetained++;
+        }
+      }
+      
+      const finalCount = await this.tracker.getCount();
+      console.log(`\n✅ ACTIVE CONTACT SYNC COMPLETE:`);
+      console.log(`   • Total contacts processed: ${totalProcessed}`);
+      console.log(`   • Active contacts added: ${totalAdded}`);
+      console.log(`   • Skipped (inactive > ${this.activeDaysThreshold} days): ${skippedNoActivity}`);
+      console.log(`   • Stale removed: ${staleRemoved}`);
+      console.log(`   • Active retained: ${activeRetained}`);
+      console.log(`   • Total in tracker: ${finalCount}`);
+      
+    } catch (error) {
+      console.error(`❌ ACTIVE CONTACT SYNC ERROR:`, error.message);
+    }
+  }
+
+  async syncAllContacts() {
+    console.log(`\n🔄 FULL CONTACT SYNC STARTED...`);
     
     try {
       let page = 1;
@@ -789,15 +948,13 @@ class PollingService {
       }
       
       const finalCount = await this.tracker.getCount();
-      console.log(`\n✅ SYNC COMPLETE:`);
+      console.log(`\n✅ FULL SYNC COMPLETE:`);
       console.log(`   • Contacts added: ${totalAdded}`);
       console.log(`   • Stale removed: ${staleRemoved}`);
       console.log(`   • Total in tracker: ${finalCount}`);
       
     } catch (error) {
       console.error(`❌ SYNC ERROR:`, error.message);
-    } finally {
-      this.isSyncing = false;
     }
   }
 
@@ -811,6 +968,10 @@ class PollingService {
           sms: this.stats.totalSmsSent - this.stats.totalMmsSent,
           mms: this.stats.totalMmsSent,
           total: this.stats.totalSmsSent + this.stats.totaliMessageSent
+        },
+        syncSettings: {
+          activeOnly: this.syncOnlyActive,
+          activeDaysThreshold: this.activeDaysThreshold
         }
       },
       apiUsage: {
