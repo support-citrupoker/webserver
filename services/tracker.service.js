@@ -26,34 +26,37 @@ class CommentTracker {
       driver: sqlite3.Database
     });
 
-    // Update table schema to include new columns
+    // Create table if it doesn't exist (with all columns)
     await this.db.exec(`
       CREATE TABLE IF NOT EXISTS monitored_contacts (
         contact_id TEXT PRIMARY KEY,
         phone_number TEXT NOT NULL,
         last_comment_hash TEXT,
         last_checked INTEGER,
-        last_activity INTEGER,
+        last_activity INTEGER DEFAULT 0,
         last_provider TEXT
-      );
+      )
+    `);
+
+    // Check and add missing columns
+    const tableInfo = await this.db.all(`PRAGMA table_info(monitored_contacts)`);
+    const columns = tableInfo.map(col => col.name);
+    
+    if (!columns.includes('last_activity')) {
+      await this.db.exec(`ALTER TABLE monitored_contacts ADD COLUMN last_activity INTEGER DEFAULT 0`);
+      console.log('✅ Added last_activity column');
+    }
+    
+    if (!columns.includes('last_provider')) {
+      await this.db.exec(`ALTER TABLE monitored_contacts ADD COLUMN last_provider TEXT`);
+      console.log('✅ Added last_provider column');
+    }
+
+    // Create indexes
+    await this.db.exec(`
       CREATE INDEX IF NOT EXISTS idx_last_checked ON monitored_contacts(last_checked);
       CREATE INDEX IF NOT EXISTS idx_last_activity ON monitored_contacts(last_activity DESC);
     `);
-
-    // Add new columns if they don't exist (for existing databases)
-    try {
-      await this.db.exec(`ALTER TABLE monitored_contacts ADD COLUMN last_activity INTEGER`);
-      console.log('✅ Added last_activity column');
-    } catch (e) {
-      // Column already exists
-    }
-    
-    try {
-      await this.db.exec(`ALTER TABLE monitored_contacts ADD COLUMN last_provider TEXT`);
-      console.log('✅ Added last_provider column');
-    } catch (e) {
-      // Column already exists
-    }
 
     console.log('✅ Comment tracker initialized');
     return this.db;
@@ -76,10 +79,6 @@ class CommentTracker {
     await this.db.run('DELETE FROM monitored_contacts WHERE contact_id = ?', contactId);
   }
 
-  /**
-   * Get contacts to check, prioritized by last_activity (most recent first)
-   * Updated version that prioritizes active contacts
-   */
   async getContactsToCheck(limit = 50) {
     return await this.db.all(`
       SELECT contact_id, phone_number, last_comment_hash, 
@@ -92,9 +91,6 @@ class CommentTracker {
     `, limit);
   }
 
-  /**
-   * Update contact activity information (NEW METHOD)
-   */
   async updateContactActivity(contactId, { last_activity, last_provider }) {
     const updates = [];
     const params = [];
