@@ -410,7 +410,7 @@ class PollingService {
       const conversations = await this.ghlService.searchConversations({
         contactId: contactId,
         limit: 5,
-        locationId: locationId || this.locationId  // Use provided locationId
+        locationId: locationId || this.locationId
       });
       
       console.log(`   Found ${conversations?.length || 0} conversations`);
@@ -508,7 +508,7 @@ class PollingService {
       
       const { provider, reason } = await this.getProviderForReply(
         contact.contact_id, 
-        locationId,  // Pass locationId here
+        locationId,
         contactTags, 
         forcedProvider
       );
@@ -691,7 +691,7 @@ class PollingService {
             // FIXED: Pass locationId to getContact
             const ghlContact = await this.ghlService.getContact(
               contact.contact_id, 
-              this.locationId  // Add locationId parameter
+              this.locationId
             );
             contactTags = ghlContact.tags || [];
             console.log(`   Tags: ${contactTags.join(', ') || 'none'}`);
@@ -706,7 +706,7 @@ class PollingService {
           const conversations = await this.ghlService.searchConversations({
             contactId: contact.contact_id,
             limit: 5,
-            locationId: this.locationId  // Add locationId parameter
+            locationId: this.locationId
           });
 
           this.checkRateLimitHeaders(conversations?.headers, 'searchConversations');
@@ -807,7 +807,7 @@ class PollingService {
                   contact,
                   cleanMessage,
                   imageUrl,
-                  this.locationId,  // Pass locationId
+                  this.locationId,
                   contactTags,
                   forcedProvider
                 );
@@ -942,9 +942,10 @@ class PollingService {
         
         this.trackApiCall('searchContacts', 'searchContacts');
         
-        // FIXED: Use the updated method with locationId
-        const response = await this.ghlService.client.contacts.searchContactsAdvanced({
-          locationId: this.locationId,  // Use stored locationId
+        // FIXED: Use getClient() method instead of direct client property
+        const client = await this.ghlService.getClient(this.locationId);
+        const response = await client.contacts.searchContactsAdvanced({
+          locationId: this.locationId,
           pageLimit: this.syncBatchSize,
           page: page
         });
@@ -1084,7 +1085,8 @@ class PollingService {
         hasMore = contacts.length === this.syncBatchSize;
         page++;
         
-        if (hasMore) {
+        if (hasMore && !this.isRateLimited()) {
+          console.log(`\n⏱️ Waiting ${this.delayBetweenPages/1000} seconds before next page...`);
           await new Promise(resolve => setTimeout(resolve, this.delayBetweenPages));
         }
       }
@@ -1128,9 +1130,10 @@ class PollingService {
         
         this.trackApiCall('searchContacts', 'searchContacts');
         
-        // FIXED: Use the updated method with locationId
-        const response = await this.ghlService.client.contacts.searchContactsAdvanced({
-          locationId: this.locationId,  // Use stored locationId
+        // FIXED: Use getClient() method instead of direct client property
+        const client = await this.ghlService.getClient(this.locationId);
+        const response = await client.contacts.searchContactsAdvanced({
+          locationId: this.locationId,
           pageLimit: this.syncBatchSize,
           page: page
         });
@@ -1143,13 +1146,15 @@ class PollingService {
             await this.tracker.addContact(contact.id, contact.phone);
             currentContactIds.add(contact.id);
             totalAdded++;
+            console.log(`   ✅ Added: ${contact.id} (${contact.phone})`);
           }
         }
         
         hasMore = contacts.length === this.syncBatchSize;
         page++;
         
-        if (hasMore) {
+        if (hasMore && !this.isRateLimited()) {
+          console.log(`\n⏱️ Waiting ${this.delayBetweenPages/1000} seconds before next page...`);
           await new Promise(resolve => setTimeout(resolve, this.delayBetweenPages));
         }
       }
@@ -1161,6 +1166,7 @@ class PollingService {
         if (!currentContactIds.has(trackedContact.contact_id)) {
           await this.tracker.removeContact(trackedContact.contact_id);
           staleRemoved++;
+          console.log(`   🗑️ Removed stale: ${trackedContact.contact_id}`);
         }
       }
       
@@ -1172,6 +1178,7 @@ class PollingService {
       
     } catch (error) {
       console.error(`❌ SYNC ERROR:`, error.message);
+      console.error(error.stack);
     }
   }
 
