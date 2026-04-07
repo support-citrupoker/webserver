@@ -8,6 +8,9 @@ class PollingService {
     this.bluebubblesService = bluebubblesService;
     this.tracker = tracker;
     
+    // Store location ID from environment or options
+    this.locationId = options.locationId || process.env.GHL_LOCATION_ID;
+    
     // Provider commands mapping
     this.providerCommands = {
       '@tb': 'tallbob',
@@ -90,6 +93,7 @@ class PollingService {
     };
     
     console.log('📊 PollingService instance created');
+    console.log(`   Location ID: ${this.locationId || 'Not set!'}`);
     console.log(`   Provider commands: ${Object.keys(this.providerCommands).join(', ')}`);
     console.log(`   Active contact sync: ${this.syncOnlyActive ? 'ON' : 'OFF'}`);
     if (this.syncOnlyActive) {
@@ -199,6 +203,7 @@ class PollingService {
   async initialize() {
     console.log(`\n🚀 INITIALIZING POLLING SERVICE...`);
     console.log(`===============================================`);
+    console.log(`📍 Target Location ID: ${this.locationId || 'NOT SET!'}`);
     console.log(`⏱️ DELAY CONFIGURATION:`);
     console.log(`   • Between contacts: ${this.delayBetweenContacts/1000} seconds`);
     console.log(`   • After rate limit: ${this.delayAfterRateLimit/60000} minutes`);
@@ -215,6 +220,25 @@ class PollingService {
     }
     console.log(`   • Provider commands: ${Object.keys(this.providerCommands).join(', ')}`);
     console.log(`===============================================\n`);
+    
+    // Test GHL connection before proceeding
+    console.log(`🧪 Testing GHL connection...`);
+    const connectionTest = await this.ghlService.testConnection(this.locationId);
+    
+    if (!connectionTest.success) {
+      console.error(`\n❌ GHL CONNECTION FAILED!`);
+      console.error(`   Error: ${connectionTest.error}`);
+      console.error(`   ${connectionTest.suggestion || 'Please check your configuration'}`);
+      console.error(`\n   Make sure:`);
+      console.error(`   1. GHL_PRIVATE_INTEGRATION_TOKEN is set correctly in .env`);
+      console.error(`   2. GHL_LOCATION_ID=${this.locationId} matches the token's location`);
+      console.error(`   3. The token was created from the correct sub-account`);
+      process.exit(1);
+    }
+    
+    console.log(`✅ GHL connection successful!`);
+    console.log(`   Location: ${connectionTest.locationId}`);
+    console.log(`   Has contacts: ${connectionTest.hasContacts}\n`);
     
     console.log(`📊 Rate limit monitoring enabled`);
     console.log(`🔄 Provider detection enabled (using contact tags + commands)`);
@@ -382,10 +406,11 @@ class PollingService {
         return { provider: 'bluebubbles', reason: 'Contact has iMessage tag' };
       }
       
+      // FIXED: Pass locationId to searchConversations
       const conversations = await this.ghlService.searchConversations({
         contactId: contactId,
         limit: 5,
-        locationId: locationId
+        locationId: locationId || this.locationId  // Use provided locationId
       });
       
       console.log(`   Found ${conversations?.length || 0} conversations`);
@@ -399,7 +424,12 @@ class PollingService {
       let lastMessageDate = null;
       
       for (const conv of conversations) {
-        const messages = await this.ghlService.getConversationMessages(conv.id, locationId, 10);
+        // FIXED: Pass locationId to getConversationMessages
+        const messages = await this.ghlService.getConversationMessages(
+          conv.id, 
+          locationId || this.locationId, 
+          10
+        );
         
         let messagesArray = [];
         if (Array.isArray(messages)) {
@@ -476,7 +506,12 @@ class PollingService {
       console.log(`   Tags: ${contactTags.join(', ') || 'none'}`);
       console.log(`   Forced Provider: ${forcedProvider || 'auto'}`);
       
-      const { provider, reason } = await this.getProviderForReply(contact.contact_id, locationId, contactTags, forcedProvider);
+      const { provider, reason } = await this.getProviderForReply(
+        contact.contact_id, 
+        locationId,  // Pass locationId here
+        contactTags, 
+        forcedProvider
+      );
       
       console.log(`   Routing: ${provider.toUpperCase()} - ${reason}`);
       
@@ -590,6 +625,7 @@ class PollingService {
   async poll() {
     console.log(`\n🔍🔍🔍 POLL STARTED at ${new Date().toLocaleTimeString()} 🔍🔍🔍`);
     console.log(`📊 ${this.getApiUsageString()}`);
+    console.log(`📍 Using location ID: ${this.locationId}`);
     
     if (this.lastErrorTime > 0) {
       const timeSinceError = Date.now() - this.lastErrorTime;
@@ -652,7 +688,11 @@ class PollingService {
           let lastProvider = null;
           
           try {
-            const ghlContact = await this.ghlService.getContact(contact.contact_id);
+            // FIXED: Pass locationId to getContact
+            const ghlContact = await this.ghlService.getContact(
+              contact.contact_id, 
+              this.locationId  // Add locationId parameter
+            );
             contactTags = ghlContact.tags || [];
             console.log(`   Tags: ${contactTags.join(', ') || 'none'}`);
           } catch (err) {
@@ -662,9 +702,11 @@ class PollingService {
           this.trackApiCall('searchConversations', 'searchConversations');
           
           console.log(`   STEP 2: Searching GHL conversations...`);
+          // FIXED: Pass locationId to searchConversations
           const conversations = await this.ghlService.searchConversations({
             contactId: contact.contact_id,
-            limit: 5
+            limit: 5,
+            locationId: this.locationId  // Add locationId parameter
           });
 
           this.checkRateLimitHeaders(conversations?.headers, 'searchConversations');
@@ -760,11 +802,12 @@ class PollingService {
               
               if (isNew) {
                 console.log(`   ✨ NEW COMMENT DETECTED! Sending reply...`);
+                // FIXED: Pass locationId to sendReplyWithProvider
                 const sendResult = await this.sendReplyWithProvider(
                   contact,
                   cleanMessage,
                   imageUrl,
-                  process.env.GHL_LOCATION_ID,
+                  this.locationId,  // Pass locationId
                   contactTags,
                   forcedProvider
                 );
@@ -797,11 +840,23 @@ class PollingService {
           this.stats.errors++;
           this.consecutiveErrors++;
           
-          if (err.statusCode === 429) {
+          if (err.statusCode === 429 || err.message?.includes('rate limit')) {
             console.log(`   🚦 RATE LIMIT HIT!`);
             this.stats.rateLimitHits++;
             this.apiCalls.rateLimitHits++;
             this.setRateLimit(this.delayAfterRateLimit);
+            break;
+          }
+          
+          // Check for location access error
+          if (err.message?.includes('token does not have access to this location')) {
+            console.error(`\n   🔴 CRITICAL: Token doesn't have access to location: ${this.locationId}`);
+            console.error(`   Please fix your .env configuration:`);
+            console.error(`   1. Go to GHL → Settings → Private Integrations`);
+            console.error(`   2. Create a new token for location: ${this.locationId}`);
+            console.error(`   3. Update GHL_PRIVATE_INTEGRATION_TOKEN in .env`);
+            console.error(`   4. Restart the application`);
+            this.lastErrorTime = Date.now();
             break;
           }
           
@@ -863,6 +918,7 @@ class PollingService {
 
   async syncActiveContactsOnly() {
     console.log(`\n🔄 ACTIVE CONTACT SYNC STARTED (last ${this.activeDaysThreshold} days)...`);
+    console.log(`📍 Using location ID: ${this.locationId}`);
     
     try {
       let page = 1;
@@ -886,8 +942,9 @@ class PollingService {
         
         this.trackApiCall('searchContacts', 'searchContacts');
         
+        // FIXED: Use the updated method with locationId
         const response = await this.ghlService.client.contacts.searchContactsAdvanced({
-          locationId: process.env.GHL_LOCATION_ID,
+          locationId: this.locationId,  // Use stored locationId
           pageLimit: this.syncBatchSize,
           page: page
         });
@@ -935,10 +992,11 @@ class PollingService {
           // Check conversations and their messages
           if (!isActive) {
             try {
+              // FIXED: Pass locationId to searchConversations
               const conversations = await this.ghlService.searchConversations({
                 contactId: contact.id,
                 limit: 5,
-                locationId: process.env.GHL_LOCATION_ID
+                locationId: this.locationId
               });
               
               if (conversations && conversations.length > 0) {
@@ -957,9 +1015,10 @@ class PollingService {
                   }
                   
                   // Get messages for more accurate date
+                  // FIXED: Pass locationId to getConversationMessages
                   const messagesResponse = await this.ghlService.getConversationMessages(
                     conv.id, 
-                    process.env.GHL_LOCATION_ID, 
+                    this.locationId, 
                     5
                   );
                   
@@ -1056,6 +1115,7 @@ class PollingService {
 
   async syncAllContacts() {
     console.log(`\n🔄 FULL CONTACT SYNC STARTED...`);
+    console.log(`📍 Using location ID: ${this.locationId}`);
     
     try {
       let page = 1;
@@ -1068,8 +1128,9 @@ class PollingService {
         
         this.trackApiCall('searchContacts', 'searchContacts');
         
+        // FIXED: Use the updated method with locationId
         const response = await this.ghlService.client.contacts.searchContactsAdvanced({
-          locationId: process.env.GHL_LOCATION_ID,
+          locationId: this.locationId,  // Use stored locationId
           pageLimit: this.syncBatchSize,
           page: page
         });
@@ -1119,6 +1180,7 @@ class PollingService {
       polling: {
         ...this.stats,
         trackedContacts: this.tracker.getCount ? this.tracker.getCount() : 0,
+        locationId: this.locationId,
         providerBreakdown: {
           iMessage: this.stats.totaliMessageSent,
           sms: this.stats.totalSmsSent - this.stats.totalMmsSent,
