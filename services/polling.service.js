@@ -511,23 +511,8 @@ class PollingService {
       console.log(`   Routing: ${provider.toUpperCase()} - ${reason}`);
       
       let result;
-      let conversationId = null;
       
-      // FIRST: Get or create a conversation in GHL
-      try {
-        console.log(`   📝 Getting/Creating GHL conversation...`);
-        const conversation = await this.ghlService.createConversation(
-          contact.contact_id, 
-          'SMS', 
-          locationId
-        );
-        conversationId = conversation.id;
-        console.log(`   ✅ Using conversation: ${conversationId}`);
-      } catch (convError) {
-        console.error(`   ❌ Failed to get/create conversation:`, convError.message);
-      }
-      
-      // SECOND: Send the actual message via provider
+      // Send the actual message via provider (NO GHL LOGGING)
       if (provider === 'bluebubbles') {
         if (!this.bluebubblesService) {
           console.error(`   ❌ BlueBubbles service not configured, falling back to SMS`);
@@ -558,30 +543,7 @@ class PollingService {
           console.log(`   ✅ iMessage sent! GUID: ${result.guid}`);
           this.stats.totalSmsSent++;
           
-          // THIRD: Add the outgoing message to GHL conversation
-          if (conversationId) {
-            try {
-              console.log(`   📤 Adding outgoing message to GHL conversation...`);
-              await this.ghlService.addMessageToConversation(
-                conversationId,
-                {
-                  contactId: contact.contact_id,
-                  body: replyText,
-                  direction: 'outbound',
-                  messageType: 'iMessage',
-                  provider: 'bluebubbles',
-                  providerMessageId: result.guid,
-                  date: new Date().toISOString(),
-                  ...(imageUrl && { mediaUrls: [imageUrl] })
-                },
-                locationId
-              );
-              console.log(`   ✅ Message added to GHL conversation`);
-            } catch (ghlError) {
-              console.error(`   ⚠️ Failed to add message to GHL:`, ghlError.message);
-            }
-          }
-          
+          // DO NOT log to GHL - just return success
           return { success: true, provider: 'bluebubbles', result };
           
         } catch (sendError) {
@@ -604,23 +566,8 @@ class PollingService {
   async sendViaTallBob(contact, replyText, imageUrl) {
     try {
       let result;
-      let conversationId = null;
       
-      // FIRST: Get or create a conversation in GHL
-      try {
-        console.log(`   📝 Getting/Creating GHL conversation...`);
-        const conversation = await this.ghlService.createConversation(
-          contact.contact_id, 
-          'SMS', 
-          this.locationId
-        );
-        conversationId = conversation.id;
-        console.log(`   ✅ Using conversation: ${conversationId}`);
-      } catch (convError) {
-        console.error(`   ❌ Failed to get/create conversation:`, convError.message);
-      }
-      
-      // SECOND: Send the actual message via Tall Bob
+      // Send the actual message via Tall Bob (NO GHL LOGGING)
       if (imageUrl) {
         this.trackApiCall('sendMMS', 'sendMMS');
         console.log(`   📸 Sending MMS via Tall Bob to ${contact.phone_number}`);
@@ -651,30 +598,7 @@ class PollingService {
         this.stats.totalSmsSent++;
       }
       
-      // THIRD: Add the outgoing message to GHL conversation
-      if (conversationId) {
-        try {
-          console.log(`   📤 Adding outgoing message to GHL conversation...`);
-          await this.ghlService.addMessageToConversation(
-            conversationId,
-            {
-              contactId: contact.contact_id,
-              body: replyText,
-              direction: 'outbound',
-              messageType: imageUrl ? 'MMS' : 'SMS',
-              provider: 'tallbob',
-              providerMessageId: result.messageId,
-              date: new Date().toISOString(),
-              ...(imageUrl && { mediaUrls: [imageUrl] })
-            },
-            this.locationId
-          );
-          console.log(`   ✅ Message added to GHL conversation`);
-        } catch (ghlError) {
-          console.error(`   ⚠️ Failed to add message to GHL:`, ghlError.message);
-        }
-      }
-      
+      // DO NOT log to GHL - just return success
       return { success: true, provider: 'tallbob', result };
       
     } catch (error) {
