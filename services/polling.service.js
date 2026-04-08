@@ -228,7 +228,6 @@ class PollingService {
     if (!connectionTest.success) {
       console.error(`\n❌ GHL CONNECTION FAILED!`);
       console.error(`   Error: ${connectionTest.error}`);
-      console.error(`   ${connectionTest.suggestion || 'Please check your configuration'}`);
       console.error(`\n   Make sure:`);
       console.error(`   1. GHL_PRIVATE_INTEGRATION_TOKEN is set correctly in .env`);
       console.error(`   2. GHL_LOCATION_ID=${this.locationId} matches the token's location`);
@@ -364,7 +363,6 @@ class PollingService {
   }
 
   extractDateFromMessage(message) {
-    // Message date fields (from debug: dateAdded, dateUpdated)
     const possibleFields = [
       'dateAdded', 'dateUpdated', 'date', 'createdAt', 
       'created_at', 'timestamp', 'sentDate', 'messageDate', 
@@ -380,7 +378,6 @@ class PollingService {
       }
     }
     
-    // If no date found, return epoch (very old)
     return new Date(0);
   }
 
@@ -406,7 +403,6 @@ class PollingService {
         return { provider: 'bluebubbles', reason: 'Contact has iMessage tag' };
       }
       
-      // FIXED: Pass locationId to searchConversations
       const conversations = await this.ghlService.searchConversations({
         contactId: contactId,
         limit: 5,
@@ -424,7 +420,6 @@ class PollingService {
       let lastMessageDate = null;
       
       for (const conv of conversations) {
-        // FIXED: Pass locationId to getConversationMessages
         const messages = await this.ghlService.getConversationMessages(
           conv.id, 
           locationId || this.locationId, 
@@ -516,7 +511,23 @@ class PollingService {
       console.log(`   Routing: ${provider.toUpperCase()} - ${reason}`);
       
       let result;
+      let conversationId = null;
       
+      // FIRST: Get or create a conversation in GHL
+      try {
+        console.log(`   📝 Getting/Creating GHL conversation...`);
+        const conversation = await this.ghlService.createConversation(
+          contact.contact_id, 
+          'SMS', 
+          locationId
+        );
+        conversationId = conversation.id;
+        console.log(`   ✅ Using conversation: ${conversationId}`);
+      } catch (convError) {
+        console.error(`   ❌ Failed to get/create conversation:`, convError.message);
+      }
+      
+      // SECOND: Send the actual message via provider
       if (provider === 'bluebubbles') {
         if (!this.bluebubblesService) {
           console.error(`   ❌ BlueBubbles service not configured, falling back to SMS`);
@@ -525,8 +536,6 @@ class PollingService {
         
         this.trackApiCall('sendiMessage', 'sendiMessage');
         const fromAccount = process.env.BLUEBUBBLES_IMESSAGE_ACCOUNT || null;
-        
-        console.log(`   Sending via BlueBubbles (timeout: 60s)...`);
         
         try {
           if (imageUrl) {
@@ -548,6 +557,31 @@ class PollingService {
           
           console.log(`   ✅ iMessage sent! GUID: ${result.guid}`);
           this.stats.totalSmsSent++;
+          
+          // THIRD: Add the outgoing message to GHL conversation
+          if (conversationId) {
+            try {
+              console.log(`   📤 Adding outgoing message to GHL conversation...`);
+              await this.ghlService.addMessageToConversation(
+                conversationId,
+                {
+                  contactId: contact.contact_id,
+                  body: replyText,
+                  direction: 'outbound',
+                  messageType: 'iMessage',
+                  provider: 'bluebubbles',
+                  providerMessageId: result.guid,
+                  date: new Date().toISOString(),
+                  ...(imageUrl && { mediaUrls: [imageUrl] })
+                },
+                locationId
+              );
+              console.log(`   ✅ Message added to GHL conversation`);
+            } catch (ghlError) {
+              console.error(`   ⚠️ Failed to add message to GHL:`, ghlError.message);
+            }
+          }
+          
           return { success: true, provider: 'bluebubbles', result };
           
         } catch (sendError) {
@@ -563,18 +597,35 @@ class PollingService {
       
     } catch (error) {
       console.error(`   ❌ Error sending reply:`, error.message);
-      console.log(`   🔄 Falling back to SMS...`);
-      return await this.sendViaTallBob(contact, replyText, imageUrl);
+      return { success: false, error: error.message };
     }
   }
   
   async sendViaTallBob(contact, replyText, imageUrl) {
     try {
+      let result;
+      let conversationId = null;
+      
+      // FIRST: Get or create a conversation in GHL
+      try {
+        console.log(`   📝 Getting/Creating GHL conversation...`);
+        const conversation = await this.ghlService.createConversation(
+          contact.contact_id, 
+          'SMS', 
+          this.locationId
+        );
+        conversationId = conversation.id;
+        console.log(`   ✅ Using conversation: ${conversationId}`);
+      } catch (convError) {
+        console.error(`   ❌ Failed to get/create conversation:`, convError.message);
+      }
+      
+      // SECOND: Send the actual message via Tall Bob
       if (imageUrl) {
         this.trackApiCall('sendMMS', 'sendMMS');
         console.log(`   📸 Sending MMS via Tall Bob to ${contact.phone_number}`);
         
-        const mmsResponse = await this.tallbobService.sendMMS({
+        result = await this.tallbobService.sendMMS({
           to: contact.phone_number,
           from: process.env.TALLBOB_NUMBER || '+61428616133',
           message: replyText,
@@ -582,25 +633,50 @@ class PollingService {
           reference: `mms_${contact.contact_id}_${Date.now()}`
         });
         
-        console.log(`   ✅ MMS sent! ID: ${mmsResponse.messageId}`);
+        console.log(`   ✅ MMS sent! ID: ${result.messageId}`);
         this.stats.totalMmsSent++;
         this.stats.totalSmsSent++;
-        return { success: true, provider: 'tallbob', result: mmsResponse };
       } else {
         this.trackApiCall('sendSMS', 'sendSMS');
         console.log(`   💬 Sending SMS via Tall Bob to ${contact.phone_number}`);
         
-        const smsResponse = await this.tallbobService.sendSMS({
+        result = await this.tallbobService.sendSMS({
           to: contact.phone_number,
           from: process.env.TALLBOB_NUMBER || '+61428616133',
           message: replyText,
           reference: `sms_${contact.contact_id}_${Date.now()}`
         });
         
-        console.log(`   ✅ SMS sent! ID: ${smsResponse.messageId}`);
+        console.log(`   ✅ SMS sent! ID: ${result.messageId}`);
         this.stats.totalSmsSent++;
-        return { success: true, provider: 'tallbob', result: smsResponse };
       }
+      
+      // THIRD: Add the outgoing message to GHL conversation
+      if (conversationId) {
+        try {
+          console.log(`   📤 Adding outgoing message to GHL conversation...`);
+          await this.ghlService.addMessageToConversation(
+            conversationId,
+            {
+              contactId: contact.contact_id,
+              body: replyText,
+              direction: 'outbound',
+              messageType: imageUrl ? 'MMS' : 'SMS',
+              provider: 'tallbob',
+              providerMessageId: result.messageId,
+              date: new Date().toISOString(),
+              ...(imageUrl && { mediaUrls: [imageUrl] })
+            },
+            this.locationId
+          );
+          console.log(`   ✅ Message added to GHL conversation`);
+        } catch (ghlError) {
+          console.error(`   ⚠️ Failed to add message to GHL:`, ghlError.message);
+        }
+      }
+      
+      return { success: true, provider: 'tallbob', result };
+      
     } catch (error) {
       console.error(`   ❌ Tall Bob send failed:`, error.message);
       throw error;
@@ -688,7 +764,6 @@ class PollingService {
           let lastProvider = null;
           
           try {
-            // FIXED: Pass locationId to getContact
             const ghlContact = await this.ghlService.getContact(
               contact.contact_id, 
               this.locationId
@@ -702,7 +777,6 @@ class PollingService {
           this.trackApiCall('searchConversations', 'searchConversations');
           
           console.log(`   STEP 2: Searching GHL conversations...`);
-          // FIXED: Pass locationId to searchConversations
           const conversations = await this.ghlService.searchConversations({
             contactId: contact.contact_id,
             limit: 5,
@@ -802,7 +876,6 @@ class PollingService {
               
               if (isNew) {
                 console.log(`   ✨ NEW COMMENT DETECTED! Sending reply...`);
-                // FIXED: Pass locationId to sendReplyWithProvider
                 const sendResult = await this.sendReplyWithProvider(
                   contact,
                   cleanMessage,
@@ -812,7 +885,7 @@ class PollingService {
                   forcedProvider
                 );
                 
-                console.log(`   ✅ Reply sent successfully via ${sendResult.provider.toUpperCase()}`);
+                console.log(`   ✅ Reply sent successfully via ${sendResult.provider?.toUpperCase() || 'unknown'}`);
                 newReplies++;
               } else {
                 console.log(`   ⏭️ Comment already processed, skipping`);
@@ -848,14 +921,9 @@ class PollingService {
             break;
           }
           
-          // Check for location access error
           if (err.message?.includes('token does not have access to this location')) {
             console.error(`\n   🔴 CRITICAL: Token doesn't have access to location: ${this.locationId}`);
-            console.error(`   Please fix your .env configuration:`);
-            console.error(`   1. Go to GHL → Settings → Private Integrations`);
-            console.error(`   2. Create a new token for location: ${this.locationId}`);
-            console.error(`   3. Update GHL_PRIVATE_INTEGRATION_TOKEN in .env`);
-            console.error(`   4. Restart the application`);
+            console.error(`   Please fix your .env configuration`);
             this.lastErrorTime = Date.now();
             break;
           }
@@ -942,9 +1010,7 @@ class PollingService {
         
         this.trackApiCall('searchContacts', 'searchContacts');
         
-        // FIXED: Use getClient() method instead of direct client property
-        const client = await this.ghlService.getClient(this.locationId);
-        const response = await client.contacts.searchContactsAdvanced({
+        const response = await this.ghlService.client.contacts.searchContactsAdvanced({
           locationId: this.locationId,
           pageLimit: this.syncBatchSize,
           page: page
@@ -964,7 +1030,6 @@ class PollingService {
           let isActive = false;
           let lastActivity = null;
           
-          // Check dateUpdated field (when contact was last updated)
           if (contact.dateUpdated) {
             const updateDate = new Date(contact.dateUpdated);
             if (!isNaN(updateDate.getTime())) {
@@ -977,7 +1042,6 @@ class PollingService {
             }
           }
           
-          // Check dateAdded field (when contact was added)
           if (!isActive && contact.dateAdded) {
             const addedDate = new Date(contact.dateAdded);
             if (!isNaN(addedDate.getTime())) {
@@ -990,10 +1054,8 @@ class PollingService {
             }
           }
           
-          // Check conversations and their messages
           if (!isActive) {
             try {
-              // FIXED: Pass locationId to searchConversations
               const conversations = await this.ghlService.searchConversations({
                 contactId: contact.id,
                 limit: 5,
@@ -1004,7 +1066,6 @@ class PollingService {
                 let latestMessageDate = null;
                 
                 for (const conv of conversations) {
-                  // Check conversation lastMessageDate
                   if (conv.lastMessageDate) {
                     const convDate = new Date(conv.lastMessageDate);
                     if (!isNaN(convDate.getTime())) {
@@ -1015,8 +1076,6 @@ class PollingService {
                     }
                   }
                   
-                  // Get messages for more accurate date
-                  // FIXED: Pass locationId to getConversationMessages
                   const messagesResponse = await this.ghlService.getConversationMessages(
                     conv.id, 
                     this.locationId, 
@@ -1034,7 +1093,6 @@ class PollingService {
                   
                   if (messagesArray && messagesArray.length > 0) {
                     for (const msg of messagesArray) {
-                      // Check dateAdded field in messages
                       if (msg.dateAdded) {
                         const msgDate = new Date(msg.dateAdded);
                         if (!isNaN(msgDate.getTime())) {
@@ -1130,9 +1188,7 @@ class PollingService {
         
         this.trackApiCall('searchContacts', 'searchContacts');
         
-        // FIXED: Use getClient() method instead of direct client property
-        const client = await this.ghlService.getClient(this.locationId);
-        const response = await client.contacts.searchContactsAdvanced({
+        const response = await this.ghlService.client.contacts.searchContactsAdvanced({
           locationId: this.locationId,
           pageLimit: this.syncBatchSize,
           page: page
