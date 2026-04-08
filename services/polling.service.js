@@ -21,18 +21,18 @@ class PollingService {
       '@imessage': 'bluebubbles'
     };
     
-    // EXTREMELY CONSERVATIVE SETTINGS - MAXIMUM SAFETY (ORIGINAL VALUES)
+    // EXTREMELY CONSERVATIVE SETTINGS - MAXIMUM SAFETY
     this.batchSize = options.batchSize || 2;
     this.syncBatchSize = options.syncBatchSize || 3;
     this.pollInterval = options.pollInterval || '*/15 * * * *';
     
-    // YOUR REQUESTED DELAYS (ORIGINAL VALUES)
-    this.delayBetweenContacts = options.delayBetweenContacts || 60000; // 60 seconds
-    this.delayAfterRateLimit = options.delayAfterRateLimit || 1800000; // 30 minutes
-    this.delayBetweenPolls = options.delayBetweenPolls || 300000; // 5 minutes
-    this.delayAfterError = options.delayAfterError || 1800000; // 30 minutes
-    this.delayBetweenPages = options.delayBetweenPages || 120000; // 2 minutes
-    this.syncInterval = options.syncInterval || '0 0 * * *'; // Daily at midnight
+    // YOUR REQUESTED DELAYS
+    this.delayBetweenContacts = options.delayBetweenContacts || 60000;
+    this.delayAfterRateLimit = options.delayAfterRateLimit || 1800000;
+    this.delayBetweenPolls = options.delayBetweenPolls || 300000;
+    this.delayAfterError = options.delayAfterError || 1800000;
+    this.delayBetweenPages = options.delayBetweenPages || 120000;
+    this.syncInterval = options.syncInterval || '0 0 * * *';
     
     // Active contact sync settings
     this.syncOnlyActive = options.syncOnlyActive !== false;
@@ -47,10 +47,6 @@ class PollingService {
     this.rateLimitedUntil = 0;
     this.lastErrorTime = 0;
     this.consecutiveErrors = 0;
-    
-    // Stale contact tracking
-    this.staleContactCount = 0;
-    this.maxStaleContactsPerPoll = 5;
     
     // Store last known rate limit headers
     this.lastRateLimitHeaders = {
@@ -90,7 +86,6 @@ class PollingService {
       totalMmsSent: 0,
       totaliMessageSent: 0,
       totalSkipped: 0,
-      staleContactsRemoved: 0,
       lastRun: null,
       errors: 0,
       rateLimitHits: 0,
@@ -411,7 +406,7 @@ class PollingService {
       const conversations = await this.ghlService.searchConversations({
         contactId: contactId,
         limit: 5,
-        locationId: locationId
+        locationId: locationId || this.locationId
       });
       
       console.log(`   Found ${conversations?.length || 0} conversations`);
@@ -425,7 +420,11 @@ class PollingService {
       let lastMessageDate = null;
       
       for (const conv of conversations) {
-        const messages = await this.ghlService.getConversationMessages(conv.id, locationId, 10);
+        const messages = await this.ghlService.getConversationMessages(
+          conv.id, 
+          locationId || this.locationId, 
+          10
+        );
         
         let messagesArray = [];
         if (Array.isArray(messages)) {
@@ -502,12 +501,18 @@ class PollingService {
       console.log(`   Tags: ${contactTags.join(', ') || 'none'}`);
       console.log(`   Forced Provider: ${forcedProvider || 'auto'}`);
       
-      const { provider, reason } = await this.getProviderForReply(contact.contact_id, locationId, contactTags, forcedProvider);
+      const { provider, reason } = await this.getProviderForReply(
+        contact.contact_id, 
+        locationId,
+        contactTags, 
+        forcedProvider
+      );
       
       console.log(`   Routing: ${provider.toUpperCase()} - ${reason}`);
       
       let result;
       
+      // Send the actual message via provider (NO GHL LOGGING)
       if (provider === 'bluebubbles') {
         if (!this.bluebubblesService) {
           console.error(`   ❌ BlueBubbles service not configured, falling back to SMS`);
@@ -516,8 +521,6 @@ class PollingService {
         
         this.trackApiCall('sendiMessage', 'sendiMessage');
         const fromAccount = process.env.BLUEBUBBLES_IMESSAGE_ACCOUNT || null;
-        
-        console.log(`   Sending via BlueBubbles (timeout: 60s)...`);
         
         try {
           if (imageUrl) {
@@ -539,6 +542,8 @@ class PollingService {
           
           console.log(`   ✅ iMessage sent! GUID: ${result.guid}`);
           this.stats.totalSmsSent++;
+          
+          // DO NOT log to GHL - just return success
           return { success: true, provider: 'bluebubbles', result };
           
         } catch (sendError) {
@@ -554,18 +559,20 @@ class PollingService {
       
     } catch (error) {
       console.error(`   ❌ Error sending reply:`, error.message);
-      console.log(`   🔄 Falling back to SMS...`);
-      return await this.sendViaTallBob(contact, replyText, imageUrl);
+      return { success: false, error: error.message };
     }
   }
   
   async sendViaTallBob(contact, replyText, imageUrl) {
     try {
+      let result;
+      
+      // Send the actual message via Tall Bob (NO GHL LOGGING)
       if (imageUrl) {
         this.trackApiCall('sendMMS', 'sendMMS');
         console.log(`   📸 Sending MMS via Tall Bob to ${contact.phone_number}`);
         
-        const mmsResponse = await this.tallbobService.sendMMS({
+        result = await this.tallbobService.sendMMS({
           to: contact.phone_number,
           from: process.env.TALLBOB_NUMBER || '+61428616133',
           message: replyText,
@@ -573,25 +580,27 @@ class PollingService {
           reference: `mms_${contact.contact_id}_${Date.now()}`
         });
         
-        console.log(`   ✅ MMS sent! ID: ${mmsResponse.messageId}`);
+        console.log(`   ✅ MMS sent! ID: ${result.messageId}`);
         this.stats.totalMmsSent++;
         this.stats.totalSmsSent++;
-        return { success: true, provider: 'tallbob', result: mmsResponse };
       } else {
         this.trackApiCall('sendSMS', 'sendSMS');
         console.log(`   💬 Sending SMS via Tall Bob to ${contact.phone_number}`);
         
-        const smsResponse = await this.tallbobService.sendSMS({
+        result = await this.tallbobService.sendSMS({
           to: contact.phone_number,
           from: process.env.TALLBOB_NUMBER || '+61428616133',
           message: replyText,
           reference: `sms_${contact.contact_id}_${Date.now()}`
         });
         
-        console.log(`   ✅ SMS sent! ID: ${smsResponse.messageId}`);
+        console.log(`   ✅ SMS sent! ID: ${result.messageId}`);
         this.stats.totalSmsSent++;
-        return { success: true, provider: 'tallbob', result: smsResponse };
       }
+      
+      // DO NOT log to GHL - just return success
+      return { success: true, provider: 'tallbob', result };
+      
     } catch (error) {
       console.error(`   ❌ Tall Bob send failed:`, error.message);
       throw error;
@@ -640,7 +649,6 @@ class PollingService {
 
     this.isPolling = true;
     const startTime = Date.now();
-    let staleRemovedThisPoll = 0;
 
     try {
       console.log(`📋 STEP 1: Getting contacts from tracker (prioritizing active)...`);
@@ -678,38 +686,16 @@ class PollingService {
           let contactTags = [];
           let lastActivityDate = null;
           let lastProvider = null;
-          let contactExists = true;
           
           try {
-            const ghlContact = await this.ghlService.getContact(contact.contact_id, this.locationId);
+            const ghlContact = await this.ghlService.getContact(
+              contact.contact_id, 
+              this.locationId
+            );
             contactTags = ghlContact.tags || [];
             console.log(`   Tags: ${contactTags.join(', ') || 'none'}`);
           } catch (err) {
-            // Check if contact not found (400 with "not found" message)
-            if (err.statusCode === 400 && err.response?.message?.includes('Contact not found')) {
-              console.log(`   🗑️ Contact ${contact.contact_id} no longer exists in GHL - marking as stale`);
-              contactExists = false;
-              
-              // Remove stale contact from tracker
-              if (staleRemovedThisPoll < this.maxStaleContactsPerPoll) {
-                await this.tracker.removeContact(contact.contact_id);
-                staleRemovedThisPoll++;
-                this.stats.staleContactsRemoved++;
-                console.log(`   ✅ Stale contact removed from tracker`);
-              } else {
-                console.log(`   ⚠️ Max stale removals reached this poll, will remove next time`);
-              }
-              processedCount++;
-              continue;
-            } else {
-              console.log(`   Could not fetch contact tags: ${err.message}`);
-            }
-          }
-          
-          // Skip if contact doesn't exist
-          if (!contactExists) {
-            processedCount++;
-            continue;
+            console.log(`   Could not fetch contact tags: ${err.message}`);
           }
           
           this.trackApiCall('searchConversations', 'searchConversations');
@@ -823,7 +809,7 @@ class PollingService {
                   forcedProvider
                 );
                 
-                console.log(`   ✅ Reply sent successfully via ${sendResult.provider.toUpperCase()}`);
+                console.log(`   ✅ Reply sent successfully via ${sendResult.provider?.toUpperCase() || 'unknown'}`);
                 newReplies++;
               } else {
                 console.log(`   ⏭️ Comment already processed, skipping`);
@@ -851,7 +837,7 @@ class PollingService {
           this.stats.errors++;
           this.consecutiveErrors++;
           
-          if (err.statusCode === 429 || err.message?.includes('Too Many Requests')) {
+          if (err.statusCode === 429 || err.message?.includes('rate limit')) {
             console.log(`   🚦 RATE LIMIT HIT!`);
             this.stats.rateLimitHits++;
             this.apiCalls.rateLimitHits++;
@@ -886,13 +872,11 @@ class PollingService {
       console.log(`      • New replies sent: ${newReplies}`);
       console.log(`      • Skipped (@reply): ${skippedComments}`);
       console.log(`      • No comments found: ${noCommentsCount}`);
-      console.log(`      • Stale contacts removed: ${staleRemovedThisPoll}`);
       console.log(`      • Errors: ${errorCount}`);
       console.log(`   📈 Cumulative totals:`);
       console.log(`      • iMessages sent: ${this.stats.totaliMessageSent}`);
       console.log(`      • SMS/MMS sent: ${this.stats.totalMmsSent}`);
       console.log(`      • Total messages: ${this.stats.totalSmsSent + this.stats.totaliMessageSent}`);
-      console.log(`      • Total stale removed: ${this.stats.staleContactsRemoved}`);
       console.log(`   ${this.getApiUsageString()}`);
       
       console.log(`\n⏱️ Waiting ${this.delayBetweenPolls/60000} minutes before next poll`);
