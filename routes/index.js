@@ -1,4 +1,4 @@
-// webhook-handler.js
+// routes/index.js
 import { join } from 'path';
 
 // Simple in-memory cache for deduplication
@@ -62,8 +62,10 @@ export default (app, tallbobService, ghlService, bluebubblesService) => {
     // Create unique event ID based on provider and message data
     let eventId;
     if (provider === 'BLUEBUBBLES') {
-      eventId = messageData.guid || messageData.messageGuid || 
-                `${messageData.sender}_${messageData.timestamp}`;
+      // BlueBubbles - extract GUID from nested data
+      const blueData = messageData.data || messageData;
+      eventId = blueData.guid || messageData.guid || blueData.messageGuid || 
+                `${blueData.handle?.address}_${blueData.dateCreated}`;
     } else {
       eventId = messageData.eventID || messageData.id || 
                 `${messageData.recipient}_${messageData.timestamp}`;
@@ -104,23 +106,57 @@ export default (app, tallbobService, ghlService, bluebubblesService) => {
     let customerPhone, providerNumber, messageText, timestamp, media, contactID, campaignID, reference;
     
     if (provider === 'BLUEBUBBLES') {
-      // BlueBubbles webhook format
-      customerPhone = messageData.sender || messageData.from;
-      providerNumber = messageData.recipient || messageData.to;
-      messageText = messageData.text || messageData.body || '';
-      timestamp = messageData.timestamp ? Math.floor(messageData.timestamp / 1000) : Math.floor(Date.now() / 1000);
-      media = messageData.attachments || messageData.media || [];
-      contactID = messageData.contactId;
-      campaignID = messageData.campaignId;
-      reference = messageData.reference;
+      // BlueBubbles webhook format - FIXED
+      const blueData = messageData.data || messageData;
+      
+      console.log('📱 BlueBubbles raw data:', JSON.stringify(blueData, null, 2));
+      
+      // Extract phone number from handle
+      if (blueData.handle && blueData.handle.address) {
+        customerPhone = blueData.handle.address;
+      } else if (blueData.sender) {
+        customerPhone = blueData.sender;
+      } else if (blueData.from) {
+        customerPhone = blueData.from;
+      } else {
+        console.error('❌ Could not extract phone number from BlueBubbles message');
+        await unlockEvent(uniqueEventId);
+        return;
+      }
+      
+      // Extract message text
+      messageText = blueData.text || blueData.body || '';
+      
+      // Extract timestamp (BlueBubbles uses milliseconds)
+      timestamp = blueData.dateCreated ? Math.floor(blueData.dateCreated / 1000) : Math.floor(Date.now() / 1000);
+      
+      // Extract media attachments
+      media = blueData.attachments || [];
+      
+      // Extract GUID as message ID
+      reference = blueData.guid || messageData.guid;
+      
+      // Set provider number (the iMessage account)
+      providerNumber = process.env.BLUEBUBBLES_IMESSAGE_ACCOUNT || 'iMessage';
+      
+      // Get contact ID if available
+      contactID = blueData.contactId || messageData.contactId;
+      campaignID = blueData.campaignId || messageData.campaignId;
+      
+      console.log(`📱 BlueBubbles message extracted:`);
+      console.log(`   From: ${customerPhone}`);
+      console.log(`   Text: "${messageText}"`);
+      console.log(`   GUID: ${reference}`);
+      console.log(`   Timestamp: ${timestamp}`);
+      console.log(`   Attachments: ${media.length}`);
       
       // Format phone numbers if they look like phone numbers (not emails)
-      if (customerPhone && customerPhone.match(/^\d+$/)) {
+      if (customerPhone && customerPhone.match(/^\+\d+$/)) {
+        // Already in + format, keep as is
+      } else if (customerPhone && customerPhone.match(/^\d+$/)) {
         customerPhone = `+${customerPhone.replace(/\D/g, '')}`;
       }
-      if (providerNumber && providerNumber.match(/^\d+$/)) {
-        providerNumber = `+${providerNumber.replace(/\D/g, '')}`;
-      }
+      
     } else {
       // Tall Bob format
       if (!messageData.recipient || !messageData.sentVia) {
@@ -138,8 +174,7 @@ export default (app, tallbobService, ghlService, bluebubblesService) => {
       reference = messageData.reference;
     }
 
-    // FIXED: Get locationId from ghlService.defaultLocationId instead of ghlService.locationId
-    const locationId = ghlService.defaultLocationId || process.env.GHL_LOCATION_ID;
+    const locationId = ghlService.locationId || process.env.GHL_LOCATION_ID;
 
     if (!locationId) {
       console.error('❌ No locationId configured');
@@ -174,14 +209,12 @@ export default (app, tallbobService, ghlService, bluebubblesService) => {
         contactData.email = customerPhone;
       }
       
-      // FIXED: Pass locationId explicitly
       const { contact, action } = await ghlService.upsertContact(contactData, locationId);
 
       console.log(`✅ Contact ${action}: ${contact.id}`);
 
       // Get or create conversation
       console.log(`💬 Getting/creating conversation for contact: ${contact.id}`);
-      // FIXED: Pass locationId explicitly
       const { conversation } = await ghlService.getOrCreateConversation(
         contact.id, 
         messageType, 
@@ -205,7 +238,6 @@ export default (app, tallbobService, ghlService, bluebubblesService) => {
         provider: provider === 'BLUEBUBBLES' ? 'BlueBubbles' : 'Tall Bob'
       };
       
-      // FIXED: Pass locationId explicitly
       await ghlService.addMessageToConversation(conversation.id, messagePayload, locationId);
 
       // Mark as processed (only after successful processing)
@@ -262,7 +294,7 @@ export default (app, tallbobService, ghlService, bluebubblesService) => {
   app.post('/bluebubbles/incoming', async (req, res) => {
     try {
       const messageData = req.body;
-      console.log('📱 Received BlueBubbles iMessage webhook:', messageData);
+      console.log('📱 Received BlueBubbles iMessage webhook:', JSON.stringify(messageData, null, 2));
       
       // Verify BlueBubbles API password if configured
       const apiPassword = req.query.password || req.headers['x-bluebubbles-password'];
@@ -318,14 +350,12 @@ export default (app, tallbobService, ghlService, bluebubblesService) => {
       // Log to GHL
       if (contactId || conversationId) {
         try {
-          // FIXED: Use provided locationId or default
-          const targetLocationId = locationId || ghlService.defaultLocationId || process.env.GHL_LOCATION_ID;
+          const targetLocationId = locationId || ghlService.locationId;
           let conversation;
           
           if (conversationId) {
             conversation = { id: conversationId };
           } else if (contactId) {
-            // FIXED: Pass locationId explicitly
             const convResult = await ghlService.getOrCreateConversation(
               contactId,
               mediaUrl ? 'MMS' : 'SMS',
@@ -335,7 +365,6 @@ export default (app, tallbobService, ghlService, bluebubblesService) => {
           }
 
           if (conversation) {
-            // FIXED: Pass locationId explicitly
             await ghlService.addMessageToConversation(conversation.id, {
               contactId: contactId,
               body: message,
@@ -392,14 +421,12 @@ export default (app, tallbobService, ghlService, bluebubblesService) => {
       // Log to GHL
       if (contactId || conversationId) {
         try {
-          // FIXED: Use provided locationId or default
-          const targetLocationId = locationId || ghlService.defaultLocationId || process.env.GHL_LOCATION_ID;
+          const targetLocationId = locationId || ghlService.locationId;
           let conversation;
           
           if (conversationId) {
             conversation = { id: conversationId };
           } else if (contactId) {
-            // FIXED: Pass locationId explicitly
             const convResult = await ghlService.getOrCreateConversation(
               contactId,
               mediaUrl ? 'MMS' : 'SMS',
@@ -409,7 +436,6 @@ export default (app, tallbobService, ghlService, bluebubblesService) => {
           }
 
           if (conversation) {
-            // FIXED: Pass locationId explicitly
             await ghlService.addMessageToConversation(conversation.id, {
               contactId: contactId,
               body: message,
@@ -460,7 +486,7 @@ export default (app, tallbobService, ghlService, bluebubblesService) => {
             return;
           }
           
-          const response = await fetch(`${process.env.APP_URL || 'http://localhost:3000'}/bluebubbles/send-message`, {
+          const response = await fetch(`${process.env.APP_URL || 'https://cayked.store'}/bluebubbles/send-message`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ to, from, message, mediaUrl, contactId, locationId, conversationId })
@@ -496,7 +522,7 @@ export default (app, tallbobService, ghlService, bluebubblesService) => {
             return;
           }
           
-          const response = await fetch(`${process.env.APP_URL || 'http://localhost:3000'}/tallbob/send-message`, {
+          const response = await fetch(`${process.env.APP_URL || 'https://cayked.store'}/tallbob/send-message`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ to, from, message, mediaUrl, contactId, locationId, conversationId })
