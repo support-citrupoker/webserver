@@ -644,5 +644,24 @@ export default (app, tallbobService, ghlService, bluebubblesService) => {
     });
   });
 
+  app.get('/test/bluebubbles-status', async (req, res) => {
+  try {
+    const status = await bluebubblesService.getStatus();
+    res.json({
+      success: true,
+      status: status,
+      config: {
+        serverUrl: process.env.BLUEBUBBLES_SERVER_URL,
+        hasPassword: !!process.env.BLUEBUBBLES_PASSWORD
+      }
+    });
+  } catch (error) {
+    res.json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
   return app;
 };
