@@ -103,6 +103,7 @@ class PollingService {
       console.log(`   Active days threshold: ${this.activeDaysThreshold} days`);
     }
     console.log(`   ⚡ Rate limit protection: ${this.minDelayBetweenCalls/1000}s between API calls`);
+    console.log(`   🚫 NO FALLBACKS - Will only use specified provider`);
   }
 
   // Helper delay function
@@ -289,6 +290,7 @@ class PollingService {
     }
     console.log(`   • Provider commands: ${Object.keys(this.providerCommands).join(', ')}`);
     console.log(`   • Min API delay: ${this.minDelayBetweenCalls/1000} seconds`);
+    console.log(`   • 🚫 NO FALLBACKS - Provider commands are strictly enforced`);
     console.log(`===============================================\n`);
     
     console.log(`📊 Rate limit monitoring enabled`);
@@ -415,7 +417,6 @@ class PollingService {
   }
 
   extractDateFromMessage(message) {
-    // Message date fields (from debug: dateAdded, dateUpdated)
     const possibleFields = [
       'dateAdded', 'dateUpdated', 'date', 'createdAt', 
       'created_at', 'timestamp', 'sentDate', 'messageDate', 
@@ -431,7 +432,6 @@ class PollingService {
       }
     }
     
-    // If no date found, return epoch (very old)
     return new Date(0);
   }
 
@@ -440,101 +440,33 @@ class PollingService {
       console.log(`🔍 [PROVIDER DETECTION] Contact: ${contactId}`);
       console.log(`   Contact tags: ${contactTags.join(', ') || 'none'}`);
       
+      // STRICT ENFORCEMENT: If provider is forced by command, use ONLY that provider
       if (forcedProvider) {
         console.log(`   🎯 Using forced provider from command: ${forcedProvider.toUpperCase()}`);
+        console.log(`   🚫 NO FALLBACK - Will only use ${forcedProvider.toUpperCase()}`);
         if (forcedProvider === 'bluebubbles') {
-          return { provider: 'bluebubbles', reason: 'Forced by @bb/@imessage command' };
+          return { provider: 'bluebubbles', reason: 'Forced by @bb/@imessage command (NO FALLBACK)' };
         } else if (forcedProvider === 'tallbob') {
-          return { provider: 'tallbob', reason: 'Forced by @tb/@sms command' };
+          return { provider: 'tallbob', reason: 'Forced by @tb/@sms command (NO FALLBACK)' };
         }
       }
       
+      // If no forced provider, check tags
       const hasiMessageTag = contactTags.includes('has_imessage') || 
                              contactTags.includes('imessage_capable');
       
       if (hasiMessageTag) {
-        console.log(`   ✅ Contact has iMessage tag - using BlueBubbles`);
-        return { provider: 'bluebubbles', reason: 'Contact has iMessage tag' };
+        console.log(`   ✅ Contact has iMessage tag - using BlueBubbles (NO FALLBACK to SMS)`);
+        return { provider: 'bluebubbles', reason: 'Contact has iMessage tag (NO FALLBACK)' };
       }
       
-      const conversations = await this.makeAPICall(
-        () => this.ghlService.searchConversations({
-          contactId: contactId,
-          limit: 5,
-          locationId: locationId
-        }),
-        'searchConversations'
-      );
-      
-      console.log(`   Found ${conversations?.length || 0} conversations`);
-      
-      if (!conversations || conversations.length === 0) {
-        console.log(`   ⚠️ No conversations found, defaulting to SMS`);
-        return { provider: 'tallbob', reason: 'No conversation history' };
-      }
-      
-      let lastProvider = null;
-      let lastMessageDate = null;
-      
-      for (const conv of conversations) {
-        const messages = await this.makeAPICall(
-          () => this.ghlService.getConversationMessages(conv.id, locationId, 10),
-          'getConversationMessages'
-        );
-        
-        let messagesArray = [];
-        if (Array.isArray(messages)) {
-          messagesArray = messages;
-        } else if (messages && messages.messages) {
-          messagesArray = messages.messages;
-        } else if (messages && messages.data) {
-          messagesArray = messages.data;
-        }
-        
-        if (messagesArray && messagesArray.length > 0) {
-          const inboundMessages = messagesArray
-            .filter(m => m.direction === 'inbound')
-            .sort((a, b) => {
-              const dateA = this.extractDateFromMessage(a);
-              const dateB = this.extractDateFromMessage(b);
-              return dateB - dateA;
-            });
-          
-          if (inboundMessages.length > 0) {
-            const latestMessage = inboundMessages[0];
-            const messageDate = this.extractDateFromMessage(latestMessage);
-            const provider = latestMessage.provider || this.detectProviderFromMessage(latestMessage);
-            
-            if (!lastMessageDate || messageDate > lastMessageDate) {
-              lastMessageDate = messageDate;
-              lastProvider = provider;
-            }
-          }
-        }
-      }
-      
-      if (lastProvider === 'BlueBubbles' || lastProvider === 'iMessage') {
-        console.log(`   ✅ Replying via BlueBubbles (iMessage) - based on message history`);
-        return { provider: 'bluebubbles', reason: 'Last message was iMessage' };
-      }
-      
-      if (lastProvider === 'Tall Bob' || lastProvider === 'SMS' || lastProvider === 'MMS') {
-        console.log(`   ✅ Replying via Tall Bob (SMS/MMS) - based on message history`);
-        return { provider: 'tallbob', reason: 'Last message was SMS/MMS' };
-      }
-      
-      for (const conv of conversations) {
-        if (conv.type === 'iMessage' || conv.type?.toLowerCase().includes('imessage')) {
-          console.log(`   ✅ Replying via BlueBubbles (iMessage) - conversation type is iMessage`);
-          return { provider: 'bluebubbles', reason: 'Conversation type is iMessage' };
-        }
-      }
-      
-      console.log(`   ⚠️ Defaulting to Tall Bob (SMS) - no iMessage indicators found`);
-      return { provider: 'tallbob', reason: 'Defaulting to SMS' };
+      // Default to Tall Bob if no iMessage indicators
+      console.log(`   ⚠️ No iMessage indicators found, defaulting to Tall Bob`);
+      return { provider: 'tallbob', reason: 'Defaulting to SMS (NO FALLBACK)' };
       
     } catch (error) {
       console.error(`   ❌ Error determining provider:`, error.message);
+      // Default to Tall Bob on error
       return { provider: 'tallbob', reason: 'Error, defaulting to SMS' };
     }
   }
@@ -556,100 +488,94 @@ class PollingService {
       console.log(`   Image: ${imageUrl ? 'Yes (' + imageUrl + ')' : 'No'}`);
       console.log(`   Tags: ${contactTags.join(', ') || 'none'}`);
       console.log(`   Forced Provider: ${forcedProvider || 'auto'}`);
+      console.log(`   🚫 NO FALLBACKS - Will use specified provider only`);
       
       const { provider, reason } = await this.getProviderForReply(contact.contact_id, locationId, contactTags, forcedProvider);
       
       console.log(`   Routing: ${provider.toUpperCase()} - ${reason}`);
+      console.log(`   🚫 If ${provider.toUpperCase()} fails, the message will NOT be sent via other providers`);
       
       let result;
       
+      // STRICT ENFORCEMENT - Only use the selected provider, NO FALLBACKS
       if (provider === 'bluebubbles') {
         if (!this.bluebubblesService) {
-          console.error(`   ❌ BlueBubbles service not configured, falling back to SMS`);
-          return await this.sendViaTallBob(contact, replyText, imageUrl);
+          const error = 'BlueBubbles service not configured';
+          console.error(`   ❌ ${error}`);
+          throw new Error(error);
         }
         
         this.trackApiCall('sendiMessage', 'sendiMessage');
         const fromAccount = process.env.BLUEBUBBLES_IMESSAGE_ACCOUNT || null;
         
         console.log(`   Sending via BlueBubbles (timeout: 60s)...`);
+        console.log(`   🚫 This will NOT fall back to Tall Bob if it fails`);
         
-        try {
-          if (imageUrl) {
-            result = await this.bluebubblesService.sendAttachment({
-              to: contact.phone_number,
-              from: fromAccount,
-              message: replyText,
-              mediaUrl: imageUrl
-            });
-            this.stats.totalMmsSent++;
-          } else {
-            result = await this.bluebubblesService.sendMessage({
-              to: contact.phone_number,
-              from: fromAccount,
-              message: replyText
-            });
-            this.stats.totaliMessageSent++;
-          }
-          
-          console.log(`   ✅ iMessage sent! GUID: ${result.guid}`);
-          this.stats.totalSmsSent++;
-          return { success: true, provider: 'bluebubbles', result };
-          
-        } catch (sendError) {
-          console.error(`   ❌ BlueBubbles send failed: ${sendError.message}`);
-          console.log(`   🔄 Falling back to SMS...`);
-          return await this.sendViaTallBob(contact, replyText, imageUrl);
+        if (imageUrl) {
+          result = await this.bluebubblesService.sendAttachment({
+            to: contact.phone_number,
+            from: fromAccount,
+            message: replyText,
+            mediaUrl: imageUrl
+          });
+          this.stats.totalMmsSent++;
+        } else {
+          result = await this.bluebubblesService.sendMessage({
+            to: contact.phone_number,
+            from: fromAccount,
+            message: replyText
+          });
+          this.stats.totaliMessageSent++;
         }
         
-      } else {
+        console.log(`   ✅ iMessage sent! GUID: ${result.guid}`);
+        this.stats.totalSmsSent++;
+        return { success: true, provider: 'bluebubbles', result };
+        
+      } else if (provider === 'tallbob') {
         console.log(`   📱 Sending via Tall Bob`);
-        return await this.sendViaTallBob(contact, replyText, imageUrl);
+        console.log(`   🚫 This will NOT fall back to BlueBubbles if it fails`);
+        
+        if (imageUrl) {
+          this.trackApiCall('sendMMS', 'sendMMS');
+          console.log(`   📸 Sending MMS via Tall Bob to ${contact.phone_number}`);
+          
+          result = await this.tallbobService.sendMMS({
+            to: contact.phone_number,
+            from: process.env.TALLBOB_NUMBER || '+61428616133',
+            message: replyText,
+            mediaUrl: imageUrl,
+            reference: `mms_${contact.contact_id}_${Date.now()}`
+          });
+          
+          console.log(`   ✅ MMS sent! ID: ${result.messageId}`);
+          this.stats.totalMmsSent++;
+          this.stats.totalSmsSent++;
+          return { success: true, provider: 'tallbob', result };
+        } else {
+          this.trackApiCall('sendSMS', 'sendSMS');
+          console.log(`   💬 Sending SMS via Tall Bob to ${contact.phone_number}`);
+          
+          result = await this.tallbobService.sendSMS({
+            to: contact.phone_number,
+            from: process.env.TALLBOB_NUMBER || '+61428616133',
+            message: replyText,
+            reference: `sms_${contact.contact_id}_${Date.now()}`
+          });
+          
+          console.log(`   ✅ SMS sent! ID: ${result.messageId}`);
+          this.stats.totalSmsSent++;
+          return { success: true, provider: 'tallbob', result };
+        }
+      } else {
+        throw new Error(`Unknown provider: ${provider}`);
       }
       
     } catch (error) {
-      console.error(`   ❌ Error sending reply:`, error.message);
-      console.log(`   🔄 Falling back to SMS...`);
-      return await this.sendViaTallBob(contact, replyText, imageUrl);
-    }
-  }
-  
-  async sendViaTallBob(contact, replyText, imageUrl) {
-    try {
-      if (imageUrl) {
-        this.trackApiCall('sendMMS', 'sendMMS');
-        console.log(`   📸 Sending MMS via Tall Bob to ${contact.phone_number}`);
-        
-        const mmsResponse = await this.tallbobService.sendMMS({
-          to: contact.phone_number,
-          from: process.env.TALLBOB_NUMBER || '+61428616133',
-          message: replyText,
-          mediaUrl: imageUrl,
-          reference: `mms_${contact.contact_id}_${Date.now()}`
-        });
-        
-        console.log(`   ✅ MMS sent! ID: ${mmsResponse.messageId}`);
-        this.stats.totalMmsSent++;
-        this.stats.totalSmsSent++;
-        return { success: true, provider: 'tallbob', result: mmsResponse };
-      } else {
-        this.trackApiCall('sendSMS', 'sendSMS');
-        console.log(`   💬 Sending SMS via Tall Bob to ${contact.phone_number}`);
-        
-        const smsResponse = await this.tallbobService.sendSMS({
-          to: contact.phone_number,
-          from: process.env.TALLBOB_NUMBER || '+61428616133',
-          message: replyText,
-          reference: `sms_${contact.contact_id}_${Date.now()}`
-        });
-        
-        console.log(`   ✅ SMS sent! ID: ${smsResponse.messageId}`);
-        this.stats.totalSmsSent++;
-        return { success: true, provider: 'tallbob', result: smsResponse };
-      }
-    } catch (error) {
-      console.error(`   ❌ Tall Bob send failed:`, error.message);
-      throw error;
+      console.error(`   ❌ Error sending reply via ${forcedProvider || 'auto-selected'} provider:`);
+      console.error(`   ${error.message}`);
+      console.error(`   🚫 No fallback attempted - message not sent`);
+      return { success: false, error: error.message, provider: forcedProvider };
     }
   }
 
@@ -842,6 +768,7 @@ class PollingService {
             
             if (forcedProvider) {
               console.log(`      🎯 Provider forced: ${forcedProvider.toUpperCase()}`);
+              console.log(`      🚫 Will use ONLY ${forcedProvider.toUpperCase()} - no fallback on failure`);
             } else {
               console.log(`      🎯 No provider command, using auto-detection`);
             }
@@ -877,8 +804,13 @@ class PollingService {
                   forcedProvider
                 );
                 
-                console.log(`   ✅ Reply sent successfully via ${sendResult.provider.toUpperCase()}`);
-                newReplies++;
+                if (sendResult.success) {
+                  console.log(`   ✅ Reply sent successfully via ${sendResult.provider.toUpperCase()}`);
+                  newReplies++;
+                } else {
+                  console.log(`   ❌ Failed to send via ${sendResult.provider || 'selected provider'}`);
+                  console.log(`   🚫 No fallback attempted - message not sent`);
+                }
               } else {
                 console.log(`   ⏭️ Comment already processed, skipping`);
               }
@@ -1019,7 +951,6 @@ class PollingService {
           let isActive = false;
           let lastActivity = null;
           
-          // Check dateUpdated field (when contact was last updated)
           if (contact.dateUpdated) {
             const updateDate = new Date(contact.dateUpdated);
             if (!isNaN(updateDate.getTime())) {
@@ -1032,7 +963,6 @@ class PollingService {
             }
           }
           
-          // Check dateAdded field (when contact was added)
           if (!isActive && contact.dateAdded) {
             const addedDate = new Date(contact.dateAdded);
             if (!isNaN(addedDate.getTime())) {
@@ -1045,7 +975,6 @@ class PollingService {
             }
           }
           
-          // Check conversations and their messages
           if (!isActive) {
             try {
               const conversations = await this.makeAPICall(
@@ -1061,7 +990,6 @@ class PollingService {
                 let latestMessageDate = null;
                 
                 for (const conv of conversations) {
-                  // Check conversation lastMessageDate
                   if (conv.lastMessageDate) {
                     const convDate = new Date(conv.lastMessageDate);
                     if (!isNaN(convDate.getTime())) {
@@ -1072,7 +1000,6 @@ class PollingService {
                     }
                   }
                   
-                  // Get messages for more accurate date
                   const messagesResponse = await this.makeAPICall(
                     () => this.ghlService.getConversationMessages(conv.id, process.env.GHL_LOCATION_ID, 5),
                     'getConversationMessages-sync'
@@ -1089,7 +1016,6 @@ class PollingService {
                   
                   if (messagesArray && messagesArray.length > 0) {
                     for (const msg of messagesArray) {
-                      // Check dateAdded field in messages
                       if (msg.dateAdded) {
                         const msgDate = new Date(msg.dateAdded);
                         if (!isNaN(msgDate.getTime())) {
