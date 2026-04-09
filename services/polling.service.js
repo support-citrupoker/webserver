@@ -45,6 +45,12 @@ class PollingService {
     this.lastErrorTime = 0;
     this.consecutiveErrors = 0;
     
+    // Rate limiting - API call tracking
+    this.lastApiCallTime = 0;
+    this.minDelayBetweenCalls = 2000; // 2 seconds minimum between API calls
+    this.apiCallTimestamps = [];
+    this.maxCallsPerMinute = 45; // Conservative limit
+    
     // Store last known rate limit headers
     this.lastRateLimitHeaders = {
       dailyRemaining: null,
@@ -83,6 +89,7 @@ class PollingService {
       totalMmsSent: 0,
       totaliMessageSent: 0,
       totalSkipped: 0,
+      staleContactsRemoved: 0,
       lastRun: null,
       errors: 0,
       rateLimitHits: 0,
@@ -94,6 +101,66 @@ class PollingService {
     console.log(`   Active contact sync: ${this.syncOnlyActive ? 'ON' : 'OFF'}`);
     if (this.syncOnlyActive) {
       console.log(`   Active days threshold: ${this.activeDaysThreshold} days`);
+    }
+    console.log(`   ⚡ Rate limit protection: ${this.minDelayBetweenCalls/1000}s between API calls`);
+  }
+
+  // Helper delay function
+  delay(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  // Track API call rate and enforce delays
+  async trackApiCallRate() {
+    const now = Date.now();
+    
+    // Ensure minimum delay between calls
+    if (this.lastApiCallTime) {
+      const timeSinceLastCall = now - this.lastApiCallTime;
+      if (timeSinceLastCall < this.minDelayBetweenCalls) {
+        const waitTime = this.minDelayBetweenCalls - timeSinceLastCall;
+        console.log(`⏸️ Rate limit protection: Waiting ${waitTime}ms before next API call`);
+        await this.delay(waitTime);
+      }
+    }
+    
+    // Track timestamps for per-minute rate limiting
+    this.apiCallTimestamps.push(now);
+    this.apiCallTimestamps = this.apiCallTimestamps.filter(ts => now - ts < 60000);
+    
+    const callsInLastMinute = this.apiCallTimestamps.length;
+    
+    if (callsInLastMinute > this.maxCallsPerMinute - 5) {
+      console.warn(`⚠️ High API call rate: ${callsInLastMinute} calls in last minute (limit: ${this.maxCallsPerMinute})`);
+    }
+    
+    if (callsInLastMinute >= this.maxCallsPerMinute) {
+      const oldestCall = this.apiCallTimestamps[0];
+      const timeToWait = 60000 - (now - oldestCall) + 1000;
+      console.warn(`🚦 Rate limit approaching! Waiting ${Math.ceil(timeToWait/1000)} seconds`);
+      await this.delay(timeToWait);
+      return this.trackApiCallRate();
+    }
+    
+    this.lastApiCallTime = Date.now();
+    return callsInLastMinute;
+  }
+
+  // Rate-limited API call wrapper
+  async makeAPICall(fn, callName = 'API Call', retryCount = 0) {
+    // Track rate limits
+    await this.trackApiCallRate();
+    
+    try {
+      return await fn();
+    } catch (error) {
+      if ((error.statusCode === 429 || error.message?.includes('Too Many Requests')) && retryCount < 3) {
+        const waitTime = (retryCount + 1) * 5000;
+        console.log(`🚦 [${callName}] Rate limit hit! Retry ${retryCount + 1}/3 after ${waitTime/1000}s`);
+        await this.delay(waitTime);
+        return this.makeAPICall(fn, callName, retryCount + 1);
+      }
+      throw error;
     }
   }
 
@@ -115,6 +182,13 @@ class PollingService {
     const burstRemaining = headers?.['x-ratelimit-remaining'];
     if (dailyRemaining !== undefined || burstRemaining !== undefined) {
       console.log(`📊 Rate limit for ${endpoint}: Daily: ${dailyRemaining || 'N/A'}, Burst: ${burstRemaining || 'N/A'}`);
+      
+      if (dailyRemaining && parseInt(dailyRemaining) < 100) {
+        console.warn(`⚠️ Daily rate limit low: only ${dailyRemaining} calls remaining!`);
+      }
+      if (burstRemaining && parseInt(burstRemaining) < 10) {
+        console.warn(`⚠️ Burst rate limit low: only ${burstRemaining} calls remaining!`);
+      }
     }
   }
 
@@ -214,6 +288,7 @@ class PollingService {
       console.log(`   • Active days threshold: ${this.activeDaysThreshold} days`);
     }
     console.log(`   • Provider commands: ${Object.keys(this.providerCommands).join(', ')}`);
+    console.log(`   • Min API delay: ${this.minDelayBetweenCalls/1000} seconds`);
     console.log(`===============================================\n`);
     
     console.log(`📊 Rate limit monitoring enabled`);
@@ -382,11 +457,14 @@ class PollingService {
         return { provider: 'bluebubbles', reason: 'Contact has iMessage tag' };
       }
       
-      const conversations = await this.ghlService.searchConversations({
-        contactId: contactId,
-        limit: 5,
-        locationId: locationId
-      });
+      const conversations = await this.makeAPICall(
+        () => this.ghlService.searchConversations({
+          contactId: contactId,
+          limit: 5,
+          locationId: locationId
+        }),
+        'searchConversations'
+      );
       
       console.log(`   Found ${conversations?.length || 0} conversations`);
       
@@ -399,7 +477,10 @@ class PollingService {
       let lastMessageDate = null;
       
       for (const conv of conversations) {
-        const messages = await this.ghlService.getConversationMessages(conv.id, locationId, 10);
+        const messages = await this.makeAPICall(
+          () => this.ghlService.getConversationMessages(conv.id, locationId, 10),
+          'getConversationMessages'
+        );
         
         let messagesArray = [];
         if (Array.isArray(messages)) {
@@ -613,6 +694,7 @@ class PollingService {
 
     this.isPolling = true;
     const startTime = Date.now();
+    let staleRemovedThisPoll = 0;
 
     try {
       console.log(`📋 STEP 1: Getting contacts from tracker (prioritizing active)...`);
@@ -621,7 +703,7 @@ class PollingService {
       
       if (contacts.length === 0) {
         console.log(`📭 No contacts to check, waiting ${this.delayBetweenPolls/60000} minutes`);
-        await new Promise(resolve => setTimeout(resolve, this.delayBetweenPolls));
+        await this.delay(this.delayBetweenPolls);
         this.isPolling = false;
         return;
       }
@@ -650,22 +732,48 @@ class PollingService {
           let contactTags = [];
           let lastActivityDate = null;
           let lastProvider = null;
+          let contactExists = true;
           
           try {
-            const ghlContact = await this.ghlService.getContact(contact.contact_id);
+            const ghlContact = await this.makeAPICall(
+              () => this.ghlService.getContact(contact.contact_id),
+              'getContact'
+            );
             contactTags = ghlContact.tags || [];
             console.log(`   Tags: ${contactTags.join(', ') || 'none'}`);
           } catch (err) {
-            console.log(`   Could not fetch contact tags: ${err.message}`);
+            if (err.statusCode === 400 && err.response?.message?.includes('Contact not found')) {
+              console.log(`   🗑️ Contact ${contact.contact_id} no longer exists in GHL - marking as stale`);
+              contactExists = false;
+              
+              if (staleRemovedThisPoll < 5) {
+                await this.tracker.removeContact(contact.contact_id);
+                staleRemovedThisPoll++;
+                this.stats.staleContactsRemoved++;
+                console.log(`   ✅ Stale contact removed from tracker`);
+              }
+              processedCount++;
+              continue;
+            } else {
+              console.log(`   Could not fetch contact tags: ${err.message}`);
+            }
+          }
+          
+          if (!contactExists) {
+            processedCount++;
+            continue;
           }
           
           this.trackApiCall('searchConversations', 'searchConversations');
           
           console.log(`   STEP 2: Searching GHL conversations...`);
-          const conversations = await this.ghlService.searchConversations({
-            contactId: contact.contact_id,
-            limit: 5
-          });
+          const conversations = await this.makeAPICall(
+            () => this.ghlService.searchConversations({
+              contactId: contact.contact_id,
+              limit: 5
+            }),
+            'searchConversations'
+          );
 
           this.checkRateLimitHeaders(conversations?.headers, 'searchConversations');
           this.consecutiveErrors = 0;
@@ -786,7 +894,7 @@ class PollingService {
           
           if (processedCount < contacts.length) {
             console.log(`\n⏱️ Waiting ${this.delayBetweenContacts/1000} seconds before next contact...`);
-            await new Promise(resolve => setTimeout(resolve, this.delayBetweenContacts));
+            await this.delay(this.delayBetweenContacts);
           }
 
         } catch (err) {
@@ -797,7 +905,7 @@ class PollingService {
           this.stats.errors++;
           this.consecutiveErrors++;
           
-          if (err.statusCode === 429) {
+          if (err.statusCode === 429 || err.message?.includes('Too Many Requests')) {
             console.log(`   🚦 RATE LIMIT HIT!`);
             this.stats.rateLimitHits++;
             this.apiCalls.rateLimitHits++;
@@ -825,15 +933,17 @@ class PollingService {
       console.log(`      • New replies sent: ${newReplies}`);
       console.log(`      • Skipped (@reply): ${skippedComments}`);
       console.log(`      • No comments found: ${noCommentsCount}`);
+      console.log(`      • Stale contacts removed: ${staleRemovedThisPoll}`);
       console.log(`      • Errors: ${errorCount}`);
       console.log(`   📈 Cumulative totals:`);
       console.log(`      • iMessages sent: ${this.stats.totaliMessageSent}`);
       console.log(`      • SMS/MMS sent: ${this.stats.totalMmsSent}`);
       console.log(`      • Total messages: ${this.stats.totalSmsSent + this.stats.totaliMessageSent}`);
+      console.log(`      • Total stale removed: ${this.stats.staleContactsRemoved}`);
       console.log(`   ${this.getApiUsageString()}`);
       
       console.log(`\n⏱️ Waiting ${this.delayBetweenPolls/60000} minutes before next poll`);
-      await new Promise(resolve => setTimeout(resolve, this.delayBetweenPolls));
+      await this.delay(this.delayBetweenPolls);
 
     } catch (error) {
       console.error(`\n💥💥💥 POLLING FATAL ERROR 💥💥💥`);
@@ -886,11 +996,14 @@ class PollingService {
         
         this.trackApiCall('searchContacts', 'searchContacts');
         
-        const response = await this.ghlService.client.contacts.searchContactsAdvanced({
-          locationId: process.env.GHL_LOCATION_ID,
-          pageLimit: this.syncBatchSize,
-          page: page
-        });
+        const response = await this.makeAPICall(
+          () => this.ghlService.client.contacts.searchContactsAdvanced({
+            locationId: process.env.GHL_LOCATION_ID,
+            pageLimit: this.syncBatchSize,
+            page: page
+          }),
+          'searchContactsAdvanced'
+        );
 
         const contacts = response.contacts || [];
         console.log(`   Received ${contacts.length} total contacts`);
@@ -935,11 +1048,14 @@ class PollingService {
           // Check conversations and their messages
           if (!isActive) {
             try {
-              const conversations = await this.ghlService.searchConversations({
-                contactId: contact.id,
-                limit: 5,
-                locationId: process.env.GHL_LOCATION_ID
-              });
+              const conversations = await this.makeAPICall(
+                () => this.ghlService.searchConversations({
+                  contactId: contact.id,
+                  limit: 5,
+                  locationId: process.env.GHL_LOCATION_ID
+                }),
+                'searchConversations-sync'
+              );
               
               if (conversations && conversations.length > 0) {
                 let latestMessageDate = null;
@@ -957,10 +1073,9 @@ class PollingService {
                   }
                   
                   // Get messages for more accurate date
-                  const messagesResponse = await this.ghlService.getConversationMessages(
-                    conv.id, 
-                    process.env.GHL_LOCATION_ID, 
-                    5
+                  const messagesResponse = await this.makeAPICall(
+                    () => this.ghlService.getConversationMessages(conv.id, process.env.GHL_LOCATION_ID, 5),
+                    'getConversationMessages-sync'
                   );
                   
                   let messagesArray = [];
@@ -1026,7 +1141,7 @@ class PollingService {
         page++;
         
         if (hasMore) {
-          await new Promise(resolve => setTimeout(resolve, this.delayBetweenPages));
+          await this.delay(this.delayBetweenPages);
         }
       }
       
@@ -1068,11 +1183,14 @@ class PollingService {
         
         this.trackApiCall('searchContacts', 'searchContacts');
         
-        const response = await this.ghlService.client.contacts.searchContactsAdvanced({
-          locationId: process.env.GHL_LOCATION_ID,
-          pageLimit: this.syncBatchSize,
-          page: page
-        });
+        const response = await this.makeAPICall(
+          () => this.ghlService.client.contacts.searchContactsAdvanced({
+            locationId: process.env.GHL_LOCATION_ID,
+            pageLimit: this.syncBatchSize,
+            page: page
+          }),
+          'searchContactsAdvanced-full'
+        );
 
         const contacts = response.contacts || [];
         console.log(`   Received ${contacts.length} contacts`);
@@ -1089,7 +1207,7 @@ class PollingService {
         page++;
         
         if (hasMore) {
-          await new Promise(resolve => setTimeout(resolve, this.delayBetweenPages));
+          await this.delay(this.delayBetweenPages);
         }
       }
       
