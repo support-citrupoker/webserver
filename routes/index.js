@@ -6,6 +6,40 @@ const processedEvents = new Set();
 const processedExpiry = new Map();
 const processingLock = new Set();
 
+// Rate limiting for GHL API calls
+let lastApiCallTime = 0;
+const MIN_API_DELAY = 2000; // 2 seconds between API calls
+const MAX_RETRIES = 3;
+
+// Helper function for delay
+const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+// Rate-limited API call wrapper
+async function makeAPICall(fn, retryCount = 0, callName = 'API Call') {
+  const now = Date.now();
+  const timeSinceLastCall = now - lastApiCallTime;
+  
+  if (timeSinceLastCall < MIN_API_DELAY) {
+    const waitTime = MIN_API_DELAY - timeSinceLastCall;
+    console.log(`⏸️ [${callName}] Rate limit protection: Waiting ${waitTime}ms`);
+    await delay(waitTime);
+  }
+  
+  try {
+    lastApiCallTime = Date.now();
+    const result = await fn();
+    return result;
+  } catch (error) {
+    if (error.statusCode === 429 && retryCount < MAX_RETRIES) {
+      const waitTime = (retryCount + 1) * 3000; // 3s, 6s, 9s
+      console.log(`🚦 [${callName}] Rate limit hit! Retry ${retryCount + 1}/${MAX_RETRIES} after ${waitTime}ms`);
+      await delay(waitTime);
+      return makeAPICall(fn, retryCount + 1, callName);
+    }
+    throw error;
+  }
+}
+
 // Clean up old entries every hour
 setInterval(() => {
   const now = Date.now();
@@ -106,7 +140,7 @@ export default (app, tallbobService, ghlService, bluebubblesService) => {
     let customerPhone, providerNumber, messageText, timestamp, media, contactID, campaignID, reference;
     
     if (provider === 'BLUEBUBBLES') {
-      // BlueBubbles webhook format - FIXED
+      // BlueBubbles webhook format
       const blueData = messageData.data || messageData;
       
       console.log('📱 BlueBubbles raw data:', JSON.stringify(blueData, null, 2));
@@ -209,18 +243,30 @@ export default (app, tallbobService, ghlService, bluebubblesService) => {
         contactData.email = customerPhone;
       }
       
-      const { contact, action } = await ghlService.upsertContact(contactData, locationId);
-
+      // Rate-limited API call 1: Upsert contact
+      const { contact, action } = await makeAPICall(
+        () => ghlService.upsertContact(contactData, locationId),
+        0,
+        'upsertContact'
+      );
       console.log(`✅ Contact ${action}: ${contact.id}`);
+
+      // Delay between API calls
+      await delay(1000);
 
       // Get or create conversation
       console.log(`💬 Getting/creating conversation for contact: ${contact.id}`);
-      const { conversation } = await ghlService.getOrCreateConversation(
-        contact.id, 
-        messageType, 
-        locationId
+      
+      // Rate-limited API call 2: Get or create conversation
+      const { conversation } = await makeAPICall(
+        () => ghlService.getOrCreateConversation(contact.id, messageType, locationId),
+        0,
+        'getOrCreateConversation'
       );
       console.log(`✅ Conversation: ${conversation.id}`);
+
+      // Delay between API calls
+      await delay(1000);
 
       // Add message to conversation
       console.log(`📝 Adding ${messageType} message to conversation: ${conversation.id}`);
@@ -238,7 +284,12 @@ export default (app, tallbobService, ghlService, bluebubblesService) => {
         provider: provider === 'BLUEBUBBLES' ? 'BlueBubbles' : 'Tall Bob'
       };
       
-      await ghlService.addMessageToConversation(conversation.id, messagePayload, locationId);
+      // Rate-limited API call 3: Add message to conversation
+      await makeAPICall(
+        () => ghlService.addMessageToConversation(conversation.id, messagePayload, locationId),
+        0,
+        'addMessageToConversation'
+      );
 
       // Mark as processed (only after successful processing)
       await markEventProcessed(uniqueEventId);
@@ -347,7 +398,7 @@ export default (app, tallbobService, ghlService, bluebubblesService) => {
         });
       }
 
-      // Log to GHL
+      // Log to GHL with rate limiting
       if (contactId || conversationId) {
         try {
           const targetLocationId = locationId || ghlService.locationId;
@@ -356,27 +407,31 @@ export default (app, tallbobService, ghlService, bluebubblesService) => {
           if (conversationId) {
             conversation = { id: conversationId };
           } else if (contactId) {
-            const convResult = await ghlService.getOrCreateConversation(
-              contactId,
-              mediaUrl ? 'MMS' : 'SMS',
-              targetLocationId
+            const convResult = await makeAPICall(
+              () => ghlService.getOrCreateConversation(contactId, mediaUrl ? 'MMS' : 'SMS', targetLocationId),
+              0,
+              'getOrCreateConversation-outbound'
             );
             conversation = convResult.conversation;
           }
 
           if (conversation) {
-            await ghlService.addMessageToConversation(conversation.id, {
-              contactId: contactId,
-              body: message,
-              messageType: mediaUrl ? 'MMS' : 'SMS',
-              mediaUrls: mediaUrl ? [mediaUrl] : [],
-              direction: 'outbound',
-              date: new Date().toISOString(),
-              providerMessageId: result.messageId,
-              fromNumber: from,
-              toNumber: to,
-              provider: 'Tall Bob'
-            }, targetLocationId);
+            await makeAPICall(
+              () => ghlService.addMessageToConversation(conversation.id, {
+                contactId: contactId,
+                body: message,
+                messageType: mediaUrl ? 'MMS' : 'SMS',
+                mediaUrls: mediaUrl ? [mediaUrl] : [],
+                direction: 'outbound',
+                date: new Date().toISOString(),
+                providerMessageId: result.messageId,
+                fromNumber: from,
+                toNumber: to,
+                provider: 'Tall Bob'
+              }, targetLocationId),
+              0,
+              'addMessageToConversation-outbound'
+            );
             console.log(`✅ Outbound Tall Bob message logged in GHL`);
           }
         } catch (ghlError) {
@@ -418,7 +473,7 @@ export default (app, tallbobService, ghlService, bluebubblesService) => {
         result = await bluebubblesService.sendMessage({ to, from, message, effectId });
       }
 
-      // Log to GHL
+      // Log to GHL with rate limiting
       if (contactId || conversationId) {
         try {
           const targetLocationId = locationId || ghlService.locationId;
@@ -427,27 +482,31 @@ export default (app, tallbobService, ghlService, bluebubblesService) => {
           if (conversationId) {
             conversation = { id: conversationId };
           } else if (contactId) {
-            const convResult = await ghlService.getOrCreateConversation(
-              contactId,
-              mediaUrl ? 'MMS' : 'SMS',
-              targetLocationId
+            const convResult = await makeAPICall(
+              () => ghlService.getOrCreateConversation(contactId, mediaUrl ? 'MMS' : 'SMS', targetLocationId),
+              0,
+              'getOrCreateConversation-outbound-blue'
             );
             conversation = convResult.conversation;
           }
 
           if (conversation) {
-            await ghlService.addMessageToConversation(conversation.id, {
-              contactId: contactId,
-              body: message,
-              messageType: mediaUrl ? 'MMS' : 'SMS',
-              mediaUrls: mediaUrl ? [mediaUrl] : [],
-              direction: 'outbound',
-              date: new Date().toISOString(),
-              providerMessageId: result.guid,
-              fromNumber: from,
-              toNumber: to,
-              provider: 'BlueBubbles'
-            }, targetLocationId);
+            await makeAPICall(
+              () => ghlService.addMessageToConversation(conversation.id, {
+                contactId: contactId,
+                body: message,
+                messageType: mediaUrl ? 'MMS' : 'SMS',
+                mediaUrls: mediaUrl ? [mediaUrl] : [],
+                direction: 'outbound',
+                date: new Date().toISOString(),
+                providerMessageId: result.guid,
+                fromNumber: from,
+                toNumber: to,
+                provider: 'BlueBubbles'
+              }, targetLocationId),
+              0,
+              'addMessageToConversation-outbound-blue'
+            );
             console.log(`✅ Outbound iMessage logged in GHL`);
           }
         } catch (ghlError) {
