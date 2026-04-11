@@ -1,6 +1,6 @@
 // services/bluebubbles.service.js
 import axios from 'axios';
-import crypto from 'crypto';
+import { randomUUID } from 'crypto';
 
 class BlueBubblesService {
   constructor() {
@@ -12,7 +12,6 @@ class BlueBubblesService {
       console.error('❌ BLUEBUBBLES_PASSWORD not set');
     }
     
-    // Create axios instance
     this.client = axios.create({
       timeout: 30000
     });
@@ -23,14 +22,14 @@ class BlueBubblesService {
   }
 
   /**
-   * Generate a unique tempGuid for each message
-   * Format: temp-{timestamp}-{random-string}
-   * Examples: temp-1702345678901-abc123, temp-1702345678902-def456
+   * Generate a proper tempGuid in the format that BlueBubbles expects
+   * Format: temp-{UUID}
+   * Example: temp-3F7A8B9C-0D1E-4F2A-8B3C-4D5E6F7A8B9C
+   * This matches the working curl command: "tempGuid": "temp-'"$(uuidgen)"'"
    */
   generateTempGuid() {
-    const timestamp = Date.now();
-    const randomString = crypto.randomBytes(8).toString('hex');
-    return `temp-${timestamp}-${randomString}`;
+    const uuid = randomUUID();
+    return `temp-${uuid}`;
   }
 
   /**
@@ -62,8 +61,8 @@ class BlueBubblesService {
    *   -H 'Content-Type: application/json' \
    *   --data-raw '{
    *     "chatGuid": "+61477273504",
-   *     "tempGuid": "temp-tes67io907cat",
-   *     "message": "what happens when temp dont change"
+   *     "tempGuid": "temp-'"$(uuidgen)"'",
+   *     "message": "Finally it works"
    *   }'
    */
   async sendMessage({ to, message, from = null, effectId = null }) {
@@ -80,11 +79,11 @@ class BlueBubblesService {
         chatGuid = this.formatPhoneNumber(to);
       }
       
-      // Generate a UNIQUE tempGuid for EVERY message
+      // Generate a proper UUID-based tempGuid (CRITICAL for BlueBubbles)
       const tempGuid = this.generateTempGuid();
       
       console.log(`   Chat GUID: ${chatGuid}`);
-      console.log(`   Temp GUID: ${tempGuid} (unique for this message)`);
+      console.log(`   Temp GUID: ${tempGuid} (UUID format - required)`);
       
       // Use the WORKING endpoint exactly as in curl command
       const endpoint = `/api/v1/message/text`;
@@ -138,6 +137,8 @@ class BlueBubblesService {
         } else if (error.response.status === 500) {
           console.error(`   ⚠️ Server error - check if Messages app is open and signed in on your Mac`);
           console.error(`   Also verify the phone number has iMessage enabled`);
+        } else if (error.response.status === 404) {
+          console.error(`   ⚠️ Endpoint not found - check your BlueBubbles server URL`);
         }
       } else if (error.code === 'ECONNREFUSED') {
         console.error(`   ⚠️ Cannot connect to BlueBubbles server at ${this.serverUrl}`);
@@ -152,7 +153,7 @@ class BlueBubblesService {
 
   /**
    * Send multiple messages in sequence
-   * Each message gets its own unique tempGuid
+   * Each message gets its own unique UUID-based tempGuid
    */
   async sendMultipleMessages(messages) {
     const results = [];
@@ -171,7 +172,6 @@ class BlueBubblesService {
 
   /**
    * Send an attachment via BlueBubbles
-   * Uses the attachment endpoint
    */
   async sendAttachment({ to, message, mediaUrl, from = null, effectId = null }) {
     try {
@@ -186,7 +186,7 @@ class BlueBubblesService {
         chatGuid = this.formatPhoneNumber(to);
       }
       
-      // Generate UNIQUE tempGuid for attachment
+      // Generate proper UUID-based tempGuid
       const tempGuid = this.generateTempGuid();
       
       // Use attachment endpoint
