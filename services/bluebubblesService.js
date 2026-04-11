@@ -1,5 +1,6 @@
 // services/bluebubbles.service.js
 import axios from 'axios';
+import crypto from 'crypto';
 
 class BlueBubblesService {
   constructor() {
@@ -22,19 +23,50 @@ class BlueBubblesService {
   }
 
   /**
+   * Generate a unique tempGuid for each message
+   * Format: temp-{timestamp}-{random-string}
+   * Examples: temp-1702345678901-abc123, temp-1702345678902-def456
+   */
+  generateTempGuid() {
+    const timestamp = Date.now();
+    const randomString = crypto.randomBytes(8).toString('hex');
+    return `temp-${timestamp}-${randomString}`;
+  }
+
+  /**
+   * Format phone number to the required format
+   * Ensures number starts with + and has no spaces or special chars
+   */
+  formatPhoneNumber(phone) {
+    if (!phone) return phone;
+    
+    // Remove all non-digit characters
+    let cleaned = phone.replace(/\D/g, '');
+    
+    // Remove leading zero if present (for Australian numbers)
+    if (cleaned.startsWith('0')) {
+      cleaned = cleaned.substring(1);
+    }
+    
+    // Add + prefix
+    return `+${cleaned}`;
+  }
+
+  /**
    * Send an iMessage via BlueBubbles
-   * Using the WORKING endpoint: /api/v1/message/text
-   * Format based on working curl command:
+   * Uses the WORKING endpoint: /api/v1/message/text
+   * 
+   * Working curl command reference:
    * curl -s https://tablet-gras-bless-pick.trycloudflare.com/api/v1/message/text?password=Evans123_1! \
    *   -X POST \
    *   -H 'Content-Type: application/json' \
    *   --data-raw '{
    *     "chatGuid": "+61477273504",
-   *     "tempGuid": "temp-tes8907",
-   *     "message": "Finally it works"
+   *     "tempGuid": "temp-tes67io907cat",
+   *     "message": "what happens when temp dont change"
    *   }'
    */
-  async sendMessage({ to, from, message, effectId = null }) {
+  async sendMessage({ to, message, from = null, effectId = null }) {
     try {
       console.log(`\n📱 Sending iMessage via BlueBubbles API:`);
       console.log(`   To: ${to}`);
@@ -45,16 +77,14 @@ class BlueBubblesService {
       if (to.includes('@')) {
         chatGuid = to;
       } else {
-        // Clean the phone number and add + prefix (as in working example)
-        const cleanNumber = to.replace(/\D/g, '');
-        chatGuid = `+${cleanNumber}`;
+        chatGuid = this.formatPhoneNumber(to);
       }
       
-      // Generate a unique tempGuid
-      const tempGuid = `temp-${Date.now()}-${Math.random().toString(36).substring(2, 10)}`;
+      // Generate a UNIQUE tempGuid for EVERY message
+      const tempGuid = this.generateTempGuid();
       
       console.log(`   Chat GUID: ${chatGuid}`);
-      console.log(`   Temp GUID: ${tempGuid}`);
+      console.log(`   Temp GUID: ${tempGuid} (unique for this message)`);
       
       // Use the WORKING endpoint exactly as in curl command
       const endpoint = `/api/v1/message/text`;
@@ -66,7 +96,7 @@ class BlueBubblesService {
         message: message
       };
       
-      // Add optional effectId if provided (rare)
+      // Add optional fields if provided
       if (effectId) {
         payload.effectId = effectId;
       }
@@ -83,12 +113,13 @@ class BlueBubblesService {
       // Check response status
       if (response.data && response.data.status === 200) {
         console.log(`   ✅ Message sent successfully!`);
-        console.log(`   Response:`, response.data);
+        console.log(`   Message GUID: ${response.data.data?.guid}`);
         
         return {
           success: true,
           guid: response.data.data?.guid,
           messageId: response.data.data?.guid,
+          tempGuid: tempGuid,
           response: response.data
         };
       } else {
@@ -120,24 +151,43 @@ class BlueBubblesService {
   }
 
   /**
+   * Send multiple messages in sequence
+   * Each message gets its own unique tempGuid
+   */
+  async sendMultipleMessages(messages) {
+    const results = [];
+    for (const msg of messages) {
+      try {
+        const result = await this.sendMessage(msg);
+        results.push({ success: true, ...result });
+      } catch (error) {
+        results.push({ success: false, error: error.message, to: msg.to });
+      }
+      // Small delay between messages to avoid rate limiting
+      await new Promise(resolve => setTimeout(resolve, 1000));
+    }
+    return results;
+  }
+
+  /**
    * Send an attachment via BlueBubbles
    * Uses the attachment endpoint
    */
-  async sendAttachment({ to, from, message, mediaUrl, effectId = null }) {
+  async sendAttachment({ to, message, mediaUrl, from = null, effectId = null }) {
     try {
       console.log(`📸 Sending attachment via BlueBubbles to ${to}`);
       console.log(`   Media URL: ${mediaUrl}`);
       
-      // Format chat GUID same as text message
+      // Format chat GUID
       let chatGuid;
       if (to.includes('@')) {
         chatGuid = to;
       } else {
-        const cleanNumber = to.replace(/\D/g, '');
-        chatGuid = `+${cleanNumber}`;
+        chatGuid = this.formatPhoneNumber(to);
       }
       
-      const tempGuid = `temp-${Date.now()}-${Math.random().toString(36).substring(2, 10)}`;
+      // Generate UNIQUE tempGuid for attachment
+      const tempGuid = this.generateTempGuid();
       
       // Use attachment endpoint
       const endpoint = `/api/v1/message/attachment`;
@@ -177,7 +227,8 @@ class BlueBubblesService {
         return {
           success: true,
           guid: response.data.data?.guid,
-          messageId: response.data.data?.guid
+          messageId: response.data.data?.guid,
+          tempGuid: tempGuid
         };
       } else {
         throw new Error(response.data?.message || 'Unknown error');
