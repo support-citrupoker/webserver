@@ -12,8 +12,10 @@ class CommentTracker {
   constructor() {
     this.db = null;
     this.dbPath = path.join(__dirname, '../data/comments.db');
-    this.cache = new Map(); // In-memory cache for faster lookups
-    this.cacheExpiry = 3600000; // 1 hour
+    this.cache = new Map();
+    this.cacheExpiry = 3600000;
+    this.consecutiveFailures = new Map(); // Track repeated failures per contact
+    this.maxFailuresBeforeSkip = 3; // Skip after 3 consecutive failures
   }
 
   async initialize() {
@@ -28,7 +30,7 @@ class CommentTracker {
       driver: sqlite3.Database
     });
 
-    // Create tables with proper schema for deduplication
+    // Create tables with proper schema
     await this.db.exec(`
       -- Table for tracking contacts
       CREATE TABLE IF NOT EXISTS monitored_contacts (
@@ -38,11 +40,14 @@ class CommentTracker {
         last_activity INTEGER DEFAULT 0,
         last_provider TEXT,
         created_at INTEGER DEFAULT (strftime('%s', 'now')),
-        updated_at INTEGER DEFAULT (strftime('%s', 'now'))
+        updated_at INTEGER DEFAULT (strftime('%s', 'now')),
+        is_active INTEGER DEFAULT 1,
+        failure_count INTEGER DEFAULT 0,
+        last_failure_reason TEXT,
+        last_failure_time INTEGER
       );
       
-      -- CRITICAL: New table for tracking ALL processed comments
-      -- This fixes the re-upload issue
+      -- Table for tracking ALL processed comments
       CREATE TABLE IF NOT EXISTS processed_comments (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         contact_id TEXT NOT NULL,
@@ -54,37 +59,46 @@ class CommentTracker {
         UNIQUE(contact_id, comment_hash)
       );
       
-      -- Indexes for performance
+      -- Table for tracking known conversations
+      CREATE TABLE IF NOT EXISTS known_conversations (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        contact_id TEXT NOT NULL,
+        conversation_id TEXT NOT NULL,
+        last_message_date INTEGER,
+        is_active INTEGER DEFAULT 1,
+        last_seen INTEGER DEFAULT (strftime('%s', 'now')),
+        created_at INTEGER DEFAULT (strftime('%s', 'now')),
+        FOREIGN KEY (contact_id) REFERENCES monitored_contacts(contact_id) ON DELETE CASCADE,
+        UNIQUE(contact_id, conversation_id)
+      );
+      
+      -- Indexes
       CREATE INDEX IF NOT EXISTS idx_processed_comments_hash ON processed_comments(comment_hash);
       CREATE INDEX IF NOT EXISTS idx_processed_comments_contact ON processed_comments(contact_id);
-      CREATE INDEX IF NOT EXISTS idx_processed_comments_date ON processed_comments(processed_at);
-      CREATE INDEX IF NOT EXISTS idx_monitored_contacts_activity ON monitored_contacts(last_activity DESC);
+      CREATE INDEX IF NOT EXISTS idx_monitored_contacts_active ON monitored_contacts(is_active);
+      CREATE INDEX IF NOT EXISTS idx_monitored_contacts_failures ON monitored_contacts(failure_count);
+      CREATE INDEX IF NOT EXISTS idx_known_conversations_active ON known_conversations(is_active);
     `);
 
-    // Check and add missing columns to monitored_contacts
+    // Add missing columns to monitored_contacts if needed
     const tableInfo = await this.db.all(`PRAGMA table_info(monitored_contacts)`);
     const columns = tableInfo.map(col => col.name);
     
-    if (!columns.includes('last_activity')) {
-      await this.db.exec(`ALTER TABLE monitored_contacts ADD COLUMN last_activity INTEGER DEFAULT 0`);
-      console.log('✅ Added last_activity column');
+    if (!columns.includes('is_active')) {
+      await this.db.exec(`ALTER TABLE monitored_contacts ADD COLUMN is_active INTEGER DEFAULT 1`);
     }
-    
-    if (!columns.includes('last_provider')) {
-      await this.db.exec(`ALTER TABLE monitored_contacts ADD COLUMN last_provider TEXT`);
-      console.log('✅ Added last_provider column');
+    if (!columns.includes('failure_count')) {
+      await this.db.exec(`ALTER TABLE monitored_contacts ADD COLUMN failure_count INTEGER DEFAULT 0`);
     }
-    
-    if (!columns.includes('created_at')) {
-      await this.db.exec(`ALTER TABLE monitored_contacts ADD COLUMN created_at INTEGER DEFAULT (strftime('%s', 'now'))`);
+    if (!columns.includes('last_failure_reason')) {
+      await this.db.exec(`ALTER TABLE monitored_contacts ADD COLUMN last_failure_reason TEXT`);
     }
-    
-    if (!columns.includes('updated_at')) {
-      await this.db.exec(`ALTER TABLE monitored_contacts ADD COLUMN updated_at INTEGER DEFAULT (strftime('%s', 'now'))`);
+    if (!columns.includes('last_failure_time')) {
+      await this.db.exec(`ALTER TABLE monitored_contacts ADD COLUMN last_failure_time INTEGER`);
     }
 
-    // Load recent processed comments into cache (last 7 days)
     await this.refreshCache();
+    await this.cleanupInactiveContacts();
 
     console.log('✅ Comment tracker initialized');
     console.log(`   Database: ${this.dbPath}`);
@@ -113,10 +127,6 @@ class CommentTracker {
     return crypto.createHash('sha256').update(comment).digest('hex').substring(0, 32);
   }
 
-  /**
-   * Generate a hash that includes the comment and optional conversation ID
-   * This ensures uniqueness per conversation
-   */
   generateUniqueHash(contactId, comment, conversationId = null) {
     const data = conversationId ? `${contactId}:${conversationId}:${comment}` : `${contactId}:${comment}`;
     return crypto.createHash('sha256').update(data).digest('hex').substring(0, 32);
@@ -124,19 +134,140 @@ class CommentTracker {
 
   async addContact(contactId, phoneNumber) {
     const now = Math.floor(Date.now() / 1000);
+    
+    // Check if contact exists and is inactive
+    const existing = await this.db.get(
+      'SELECT is_active, failure_count FROM monitored_contacts WHERE contact_id = ?',
+      [contactId]
+    );
+    
+    if (existing && existing.is_active === 0) {
+      // Reactivate the contact
+      await this.db.run(`
+        UPDATE monitored_contacts 
+        SET is_active = 1, 
+            failure_count = 0,
+            last_failure_reason = NULL,
+            updated_at = ?
+        WHERE contact_id = ?
+      `, [now, contactId]);
+      console.log(`   🔄 Reactivated contact ${contactId}`);
+    } else {
+      await this.db.run(`
+        INSERT INTO monitored_contacts (contact_id, phone_number, created_at, updated_at)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(contact_id) DO UPDATE SET
+          phone_number = excluded.phone_number,
+          updated_at = excluded.updated_at,
+          is_active = 1
+      `, [contactId, phoneNumber, now, now]);
+    }
+  }
+
+  async recordFailure(contactId, reason) {
+    const now = Math.floor(Date.now() / 1000);
+    
     await this.db.run(`
-      INSERT INTO monitored_contacts (contact_id, phone_number, created_at, updated_at)
-      VALUES (?, ?, ?, ?)
-      ON CONFLICT(contact_id) DO UPDATE SET
-        phone_number = excluded.phone_number,
-        updated_at = excluded.updated_at
-    `, [contactId, phoneNumber, now, now]);
+      UPDATE monitored_contacts 
+      SET failure_count = COALESCE(failure_count, 0) + 1,
+          last_failure_reason = ?,
+          last_failure_time = ?,
+          updated_at = ?
+      WHERE contact_id = ?
+    `, [reason, now, now, contactId]);
+    
+    // Update in-memory tracking
+    const current = this.consecutiveFailures.get(contactId) || 0;
+    this.consecutiveFailures.set(contactId, current + 1);
+    
+    // Check if we should deactivate this contact
+    const contact = await this.db.get(
+      'SELECT failure_count FROM monitored_contacts WHERE contact_id = ?',
+      [contactId]
+    );
+    
+    if (contact && contact.failure_count >= this.maxFailuresBeforeSkip) {
+      await this.deactivateContact(contactId, reason);
+      return true; // Contact was deactivated
+    }
+    
+    return false; // Contact still active
+  }
+
+  async deactivateContact(contactId, reason) {
+    const now = Math.floor(Date.now() / 1000);
+    
+    await this.db.run(`
+      UPDATE monitored_contacts 
+      SET is_active = 0,
+          last_failure_reason = ?,
+          updated_at = ?
+      WHERE contact_id = ?
+    `, [reason, now, contactId]);
+    
+    console.log(`   🔴 Contact ${contactId} deactivated due to: ${reason}`);
+    return true;
+  }
+
+  async reactivateContact(contactId) {
+    const now = Math.floor(Date.now() / 1000);
+    
+    await this.db.run(`
+      UPDATE monitored_contacts 
+      SET is_active = 1,
+          failure_count = 0,
+          last_failure_reason = NULL,
+          updated_at = ?
+      WHERE contact_id = ?
+    `, [now, contactId]);
+    
+    this.consecutiveFailures.delete(contactId);
+    console.log(`   ✅ Contact ${contactId} reactivated`);
+  }
+
+  async markConversationNotFound(contactId, conversationId) {
+    // Mark this conversation as inactive/deleted
+    await this.db.run(`
+      UPDATE known_conversations 
+      SET is_active = 0,
+          last_seen = ?
+      WHERE contact_id = ? AND conversation_id = ?
+    `, [Math.floor(Date.now() / 1000), contactId, conversationId]);
+    
+    // Also record a failure for this contact
+    return this.recordFailure(contactId, `Conversation ${conversationId} not found in GHL (may have been deleted)`);
+  }
+
+  async isConversationActive(contactId, conversationId) {
+    const result = await this.db.get(`
+      SELECT is_active FROM known_conversations 
+      WHERE contact_id = ? AND conversation_id = ?
+    `, [contactId, conversationId]);
+    
+    return result ? result.is_active === 1 : true; // Assume active if not tracked
+  }
+
+  async trackConversation(contactId, conversationId, lastMessageDate = null) {
+    const now = Math.floor(Date.now() / 1000);
+    
+    await this.db.run(`
+      INSERT INTO known_conversations (contact_id, conversation_id, last_message_date, last_seen, created_at)
+      VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(contact_id, conversation_id) DO UPDATE SET
+        last_seen = excluded.last_seen,
+        is_active = 1,
+        last_message_date = COALESCE(?, last_message_date)
+    `, [contactId, conversationId, lastMessageDate, now, now, lastMessageDate]);
   }
 
   async removeContact(contactId) {
-    // Also remove all processed comments for this contact
-    await this.db.run('DELETE FROM processed_comments WHERE contact_id = ?', contactId);
-    await this.db.run('DELETE FROM monitored_contacts WHERE contact_id = ?', contactId);
+    // Mark as inactive instead of deleting (preserve history)
+    await this.db.run(`
+      UPDATE monitored_contacts 
+      SET is_active = 0, 
+          updated_at = ?
+      WHERE contact_id = ?
+    `, [Math.floor(Date.now() / 1000), contactId]);
     
     // Clear from cache
     for (const key of this.cache.keys()) {
@@ -144,16 +275,23 @@ class CommentTracker {
         this.cache.delete(key);
       }
     }
+    
+    this.consecutiveFailures.delete(contactId);
   }
 
   async getContactsToCheck(limit = 50) {
+    // Only get active contacts, sorted by priority
     return await this.db.all(`
-      SELECT contact_id, phone_number, last_comment_hash, 
-             COALESCE(last_activity, 0) as last_activity, last_provider
+      SELECT contact_id, phone_number, 
+             COALESCE(last_activity, 0) as last_activity, 
+             last_provider,
+             failure_count
       FROM monitored_contacts
+      WHERE is_active = 1
       ORDER BY 
-        last_activity DESC,
-        last_checked ASC NULLS FIRST
+        failure_count ASC,           -- Fewer failures first
+        last_activity DESC,          -- Most active first
+        last_checked ASC NULLS FIRST -- Least recently checked next
       LIMIT ?
     `, limit);
   }
@@ -178,32 +316,30 @@ class CommentTracker {
     params.push(Math.floor(Date.now() / 1000));
     params.push(contactId);
     
+    // Reset failure count on successful activity
+    updates.push('failure_count = 0');
+    updates.push('last_failure_reason = NULL');
+    
     await this.db.run(`
       UPDATE monitored_contacts 
       SET ${updates.join(', ')}
       WHERE contact_id = ?
     `, params);
     
+    this.consecutiveFailures.delete(contactId);
     console.log(`📝 Updated contact ${contactId} activity`);
   }
 
-  /**
-   * FIXED: Check if a comment has been processed before
-   * Now stores ALL processed comments, not just the last one
-   */
   async checkComment(contactId, comment, conversationId = null) {
     if (!comment) return { isNew: false, hash: null };
 
     const hash = this.generateUniqueHash(contactId, comment, conversationId);
     const cacheKey = `${contactId}:${hash}`;
     
-    // Check cache first (fast)
     if (this.cache.has(cacheKey)) {
-      console.log(`   📌 Comment already processed (cached)`);
       return { isNew: false, hash };
     }
     
-    // Check database
     const result = await this.db.get(
       'SELECT id, processed_at FROM processed_comments WHERE contact_id = ? AND comment_hash = ?',
       [contactId, hash]
@@ -212,14 +348,9 @@ class CommentTracker {
     const isNew = !result;
     
     if (!isNew) {
-      // Add to cache for future fast lookups
       this.cache.set(cacheKey, result.processed_at);
-      console.log(`   📌 Comment already processed (DB)`);
-    } else {
-      console.log(`   ✨ New comment detected`);
     }
 
-    // Update last_checked timestamp
     await this.db.run(`
       UPDATE monitored_contacts 
       SET last_checked = strftime('%s', 'now')
@@ -229,10 +360,6 @@ class CommentTracker {
     return { isNew, hash, comment };
   }
 
-  /**
-   * FIXED: Mark a comment as processed after successful reply
-   * Now stores the comment hash permanently
-   */
   async markCommentProcessed(contactId, comment, hash = null, conversationId = null) {
     if (!comment) return false;
     
@@ -246,11 +373,9 @@ class CommentTracker {
         ON CONFLICT(contact_id, comment_hash) DO NOTHING
       `, [contactId, commentHash, comment.substring(0, 500), conversationId, now]);
       
-      // Update cache
       const cacheKey = `${contactId}:${commentHash}`;
       this.cache.set(cacheKey, now);
       
-      console.log(`   ✅ Comment marked as processed`);
       return true;
     } catch (error) {
       console.error(`   ❌ Failed to mark comment as processed:`, error.message);
@@ -258,9 +383,6 @@ class CommentTracker {
     }
   }
 
-  /**
-   * Check if a specific comment has been processed (convenience method)
-   */
   async isCommentProcessed(contactId, comment, conversationId = null) {
     const hash = this.generateUniqueHash(contactId, comment, conversationId);
     const cacheKey = `${contactId}:${hash}`;
@@ -275,27 +397,22 @@ class CommentTracker {
     return !!result;
   }
 
-  async getCount() {
-    const result = await this.db.get('SELECT COUNT(*) as count FROM monitored_contacts');
-    return result.count;
-  }
-
-  async getProcessedCommentsCount(contactId = null) {
-    if (contactId) {
-      const result = await this.db.get(
-        'SELECT COUNT(*) as count FROM processed_comments WHERE contact_id = ?',
-        [contactId]
-      );
-      return result.count;
+  async cleanupInactiveContacts(daysToKeep = 7) {
+    const cutoffTime = Math.floor(Date.now() / 1000) - (daysToKeep * 24 * 3600);
+    
+    // Delete inactive contacts older than cutoff
+    const result = await this.db.run(`
+      DELETE FROM monitored_contacts 
+      WHERE is_active = 0 AND updated_at < ?
+    `, cutoffTime);
+    
+    if (result.changes > 0) {
+      console.log(`🧹 Cleaned up ${result.changes} inactive contacts`);
     }
-    const result = await this.db.get('SELECT COUNT(*) as count FROM processed_comments');
-    return result.count;
+    
+    return result.changes;
   }
 
-  /**
-   * Clean up old processed comments (older than X days)
-   * Run this periodically to keep database size manageable
-   */
   async cleanupOldComments(daysToKeep = 30) {
     const cutoffTime = Math.floor(Date.now() / 1000) - (daysToKeep * 24 * 3600);
     const result = await this.db.run(
@@ -311,9 +428,29 @@ class CommentTracker {
     return result.changes;
   }
 
+  async getCount() {
+    const result = await this.db.get('SELECT COUNT(*) as count FROM monitored_contacts WHERE is_active = 1');
+    return result.count;
+  }
+
+  async getStats() {
+    const active = await this.db.get('SELECT COUNT(*) as count FROM monitored_contacts WHERE is_active = 1');
+    const inactive = await this.db.get('SELECT COUNT(*) as count FROM monitored_contacts WHERE is_active = 0');
+    const failed = await this.db.get('SELECT COUNT(*) as count FROM monitored_contacts WHERE failure_count >= 3');
+    const processed = await this.db.get('SELECT COUNT(*) as count FROM processed_comments');
+    
+    return {
+      activeContacts: active.count,
+      inactiveContacts: inactive.count,
+      failedContacts: failed.count,
+      processedComments: processed.count
+    };
+  }
+
   async close() {
     if (this.db) await this.db.close();
     this.cache.clear();
+    this.consecutiveFailures.clear();
   }
 }
 
