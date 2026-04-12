@@ -8,15 +8,13 @@ class PollingService {
     this.bluebubblesService = bluebubblesService;
     this.tracker = tracker;
     
-    // Provider commands mapping
-    this.providerCommands = {
-      '@tb': 'tallbob',
-      '@tallbob': 'tallbob',
-      '@sms': 'tallbob',
-      '@bb': 'bluebubbles',
-      '@bluebubbles': 'bluebubbles',
-      '@imessage': 'bluebubbles'
-    };
+    // DETERMINE PROVIDER FROM ENVIRONMENT VARIABLE
+    // IMESSAGEORSMS=true -> use BlueBubbles (iMessage)
+    // IMESSAGEORSMS=false -> use Tall Bob (SMS)
+    const useIMessage = process.env.IMESSAGEORSMS === 'true';
+    this.provider = useIMessage ? 'bluebubbles' : 'tallbob';
+    
+    console.log(`📱 Provider configured: ${this.provider.toUpperCase()} (IMESSAGEORSMS=${process.env.IMESSAGEORSMS})`);
     
     // EXTREMELY CONSERVATIVE SETTINGS - MAXIMUM SAFETY
     this.batchSize = options.batchSize || 2;
@@ -97,13 +95,13 @@ class PollingService {
     };
     
     console.log('📊 PollingService instance created');
-    console.log(`   Provider commands: ${Object.keys(this.providerCommands).join(', ')}`);
+    console.log(`   Provider: ${this.provider.toUpperCase()} (from IMESSAGEORSMS env var)`);
     console.log(`   Active contact sync: ${this.syncOnlyActive ? 'ON' : 'OFF'}`);
     if (this.syncOnlyActive) {
       console.log(`   Active days threshold: ${this.activeDaysThreshold} days`);
     }
     console.log(`   ⚡ Rate limit protection: ${this.minDelayBetweenCalls/1000}s between API calls`);
-    console.log(`   🚫 NO FALLBACKS - Will only use specified provider`);
+    console.log(`   🚫 NO @ COMMANDS - Provider fixed by environment variable`);
   }
 
   // Helper delay function
@@ -274,6 +272,10 @@ class PollingService {
   async initialize() {
     console.log(`\n🚀 INITIALIZING POLLING SERVICE...`);
     console.log(`===============================================`);
+    console.log(`📱 PROVIDER CONFIGURATION:`);
+    console.log(`   IMESSAGEORSMS = ${process.env.IMESSAGEORSMS || 'not set'}`);
+    console.log(`   Using provider: ${this.provider.toUpperCase()}`);
+    console.log(`   ${this.provider === 'bluebubbles' ? '📱 Sending via iMessage (BlueBubbles)' : '📱 Sending via SMS (Tall Bob)'}`);
     console.log(`⏱️ DELAY CONFIGURATION:`);
     console.log(`   • Between contacts: ${this.delayBetweenContacts/1000} seconds`);
     console.log(`   • After rate limit: ${this.delayAfterRateLimit/60000} minutes`);
@@ -288,13 +290,11 @@ class PollingService {
     if (this.syncOnlyActive) {
       console.log(`   • Active days threshold: ${this.activeDaysThreshold} days`);
     }
-    console.log(`   • Provider commands: ${Object.keys(this.providerCommands).join(', ')}`);
     console.log(`   • Min API delay: ${this.minDelayBetweenCalls/1000} seconds`);
-    console.log(`   • 🚫 NO FALLBACKS - Provider commands are strictly enforced`);
+    console.log(`   • 🚫 NO @ COMMANDS - All messages use ${this.provider.toUpperCase()}`);
     console.log(`===============================================\n`);
     
     console.log(`📊 Rate limit monitoring enabled`);
-    console.log(`🔄 Provider detection enabled (using contact tags + commands)`);
     
     if (this.tracker && typeof this.tracker.initialize === 'function') {
       await this.tracker.initialize();
@@ -393,29 +393,6 @@ class PollingService {
     });
   }
 
-  parseInternalComment(comment) {
-    const trimmedComment = comment?.trim() || '';
-    const lowerComment = trimmedComment.toLowerCase();
-    
-    let forcedProvider = null;
-    let cleanMessage = trimmedComment;
-    
-    for (const [command, provider] of Object.entries(this.providerCommands)) {
-      if (lowerComment.startsWith(command)) {
-        forcedProvider = provider;
-        cleanMessage = trimmedComment.substring(command.length).trim();
-        console.log(`   🎯 Provider command detected: ${command} -> using ${provider.toUpperCase()}`);
-        break;
-      }
-    }
-    
-    return {
-      forcedProvider,
-      cleanMessage,
-      originalMessage: trimmedComment
-    };
-  }
-
   extractDateFromMessage(message) {
     const possibleFields = [
       'dateAdded', 'dateUpdated', 'date', 'createdAt', 
@@ -434,71 +411,20 @@ class PollingService {
     
     return new Date(0);
   }
-
-  async getProviderForReply(contactId, locationId, contactTags = [], forcedProvider = null) {
-    try {
-      console.log(`🔍 [PROVIDER DETECTION] Contact: ${contactId}`);
-      console.log(`   Contact tags: ${contactTags.join(', ') || 'none'}`);
-      
-      // STRICT ENFORCEMENT: If provider is forced by command, use ONLY that provider
-      if (forcedProvider) {
-        console.log(`   🎯 Using forced provider from command: ${forcedProvider.toUpperCase()}`);
-        console.log(`   🚫 NO FALLBACK - Will only use ${forcedProvider.toUpperCase()}`);
-        if (forcedProvider === 'bluebubbles') {
-          return { provider: 'bluebubbles', reason: 'Forced by @bb/@imessage command (NO FALLBACK)' };
-        } else if (forcedProvider === 'tallbob') {
-          return { provider: 'tallbob', reason: 'Forced by @tb/@sms command (NO FALLBACK)' };
-        }
-      }
-      
-      // If no forced provider, check tags
-      const hasiMessageTag = contactTags.includes('has_imessage') || 
-                             contactTags.includes('imessage_capable');
-      
-      if (hasiMessageTag) {
-        console.log(`   ✅ Contact has iMessage tag - using BlueBubbles (NO FALLBACK to SMS)`);
-        return { provider: 'bluebubbles', reason: 'Contact has iMessage tag (NO FALLBACK)' };
-      }
-      
-      // Default to Tall Bob if no iMessage indicators
-      console.log(`   ⚠️ No iMessage indicators found, defaulting to Tall Bob`);
-      return { provider: 'tallbob', reason: 'Defaulting to SMS (NO FALLBACK)' };
-      
-    } catch (error) {
-      console.error(`   ❌ Error determining provider:`, error.message);
-      // Default to Tall Bob on error
-      return { provider: 'tallbob', reason: 'Error, defaulting to SMS' };
-    }
-  }
   
-  detectProviderFromMessage(message) {
-    if (message.metadata?.provider) return message.metadata.provider;
-    if (message.messageType === 'iMessage') return 'BlueBubbles';
-    if (message.messageType === 'SMS' || message.messageType === 'MMS') return 'Tall Bob';
-    if (message.toNumber?.includes('@')) return 'BlueBubbles';
-    return 'unknown';
-  }
-  
-  async sendReplyWithProvider(contact, replyText, imageUrl, locationId, contactTags = [], forcedProvider = null) {
+  async sendReply(contact, replyText, imageUrl, locationId) {
     try {
       console.log(`\n📤 ===== SENDING REPLY =====`);
       console.log(`   Contact ID: ${contact.contact_id}`);
       console.log(`   Phone: ${contact.phone_number}`);
+      console.log(`   Provider: ${this.provider.toUpperCase()} (from IMESSAGEORSMS env var)`);
       console.log(`   Message: "${replyText.substring(0, 100)}"`);
       console.log(`   Image: ${imageUrl ? 'Yes (' + imageUrl + ')' : 'No'}`);
-      console.log(`   Tags: ${contactTags.join(', ') || 'none'}`);
-      console.log(`   Forced Provider: ${forcedProvider || 'auto'}`);
-      console.log(`   🚫 NO FALLBACKS - Will use specified provider only`);
-      
-      const { provider, reason } = await this.getProviderForReply(contact.contact_id, locationId, contactTags, forcedProvider);
-      
-      console.log(`   Routing: ${provider.toUpperCase()} - ${reason}`);
-      console.log(`   🚫 If ${provider.toUpperCase()} fails, the message will NOT be sent via other providers`);
+      console.log(`   🚫 NO @ COMMANDS - Using fixed provider`);
       
       let result;
       
-      // STRICT ENFORCEMENT - Only use the selected provider, NO FALLBACKS
-      if (provider === 'bluebubbles') {
+      if (this.provider === 'bluebubbles') {
         if (!this.bluebubblesService) {
           const error = 'BlueBubbles service not configured';
           console.error(`   ❌ ${error}`);
@@ -508,8 +434,7 @@ class PollingService {
         this.trackApiCall('sendiMessage', 'sendiMessage');
         const fromAccount = process.env.BLUEBUBBLES_IMESSAGE_ACCOUNT || null;
         
-        console.log(`   Sending via BlueBubbles (timeout: 60s)...`);
-        console.log(`   🚫 This will NOT fall back to Tall Bob if it fails`);
+        console.log(`   Sending via BlueBubbles (iMessage)...`);
         
         if (imageUrl) {
           result = await this.bluebubblesService.sendAttachment({
@@ -532,9 +457,8 @@ class PollingService {
         this.stats.totalSmsSent++;
         return { success: true, provider: 'bluebubbles', result };
         
-      } else if (provider === 'tallbob') {
-        console.log(`   📱 Sending via Tall Bob`);
-        console.log(`   🚫 This will NOT fall back to BlueBubbles if it fails`);
+      } else if (this.provider === 'tallbob') {
+        console.log(`   Sending via Tall Bob (SMS/MMS)...`);
         
         if (imageUrl) {
           this.trackApiCall('sendMMS', 'sendMMS');
@@ -568,14 +492,12 @@ class PollingService {
           return { success: true, provider: 'tallbob', result };
         }
       } else {
-        throw new Error(`Unknown provider: ${provider}`);
+        throw new Error(`Unknown provider: ${this.provider}`);
       }
       
     } catch (error) {
-      console.error(`   ❌ Error sending reply via ${forcedProvider || 'auto-selected'} provider:`);
-      console.error(`   ${error.message}`);
-      console.error(`   🚫 No fallback attempted - message not sent`);
-      return { success: false, error: error.message, provider: forcedProvider };
+      console.error(`   ❌ Error sending reply:`, error.message);
+      return { success: false, error: error.message, provider: this.provider };
     }
   }
 
@@ -597,6 +519,7 @@ class PollingService {
   async poll() {
     console.log(`\n🔍🔍🔍 POLL STARTED at ${new Date().toLocaleTimeString()} 🔍🔍🔍`);
     console.log(`📊 ${this.getApiUsageString()}`);
+    console.log(`📱 Using provider: ${this.provider.toUpperCase()}`);
     
     if (this.lastErrorTime > 0) {
       const timeSinceError = Date.now() - this.lastErrorTime;
@@ -764,52 +687,51 @@ class PollingService {
             console.log(`      Date: ${latestComment.date}`);
             console.log(`      Conv ID: ${latestComment.conversationId}`);
             
-            const { forcedProvider, cleanMessage } = this.parseInternalComment(latestComment.text);
+            // NO @ COMMAND PARSING - Use the entire comment as the message
+            const cleanMessage = latestComment.text.trim();
             
-            if (forcedProvider) {
-              console.log(`      🎯 Provider forced: ${forcedProvider.toUpperCase()}`);
-              console.log(`      🚫 Will use ONLY ${forcedProvider.toUpperCase()} - no fallback on failure`);
-            } else {
-              console.log(`      🎯 No provider command, using auto-detection`);
-            }
+            console.log(`      💬 Will send: "${cleanMessage.substring(0, 100)}"`);
+            console.log(`      🚫 No @ command parsing - using fixed provider: ${this.provider.toUpperCase()}`);
             
             const imageUrl = this.extractImageUrl(cleanMessage);
             if (imageUrl) {
               console.log(`      📸 Image detected: ${imageUrl}`);
             }
             
-            if (cleanMessage.trim().toLowerCase().startsWith('@reply')) {
+            // Skip @reply commands (internal notes only)
+            if (cleanMessage.toLowerCase().startsWith('@reply')) {
               console.log(`      ⏭️ Comment starts with @reply - SKIPPING (internal note)`);
               skippedComments++;
             } else if (cleanMessage.trim()) {
-              console.log(`      💬 Will send: "${cleanMessage.substring(0, 100)}"`);
-              
               console.log(`   STEP 4: Checking if comment is new...`);
-              const { isNew } = await this.tracker.checkComment(
+              const { isNew, hash } = await this.tracker.checkComment(
                 contact.contact_id,
                 latestComment.text,
-                cleanMessage
+                latestComment.conversationId
               );
 
               console.log(`      isNew = ${isNew}`);
               
               if (isNew) {
                 console.log(`   ✨ NEW COMMENT DETECTED! Sending reply...`);
-                const sendResult = await this.sendReplyWithProvider(
+                const sendResult = await this.sendReply(
                   contact,
                   cleanMessage,
                   imageUrl,
-                  process.env.GHL_LOCATION_ID,
-                  contactTags,
-                  forcedProvider
+                  process.env.GHL_LOCATION_ID
                 );
                 
                 if (sendResult.success) {
                   console.log(`   ✅ Reply sent successfully via ${sendResult.provider.toUpperCase()}`);
+                  await this.tracker.markCommentProcessed(
+                    contact.contact_id,
+                    latestComment.text,
+                    hash,
+                    latestComment.conversationId
+                  );
                   newReplies++;
                 } else {
                   console.log(`   ❌ Failed to send via ${sendResult.provider || 'selected provider'}`);
-                  console.log(`   🚫 No fallback attempted - message not sent`);
                 }
               } else {
                 console.log(`   ⏭️ Comment already processed, skipping`);
@@ -1163,6 +1085,8 @@ class PollingService {
       polling: {
         ...this.stats,
         trackedContacts: this.tracker.getCount ? this.tracker.getCount() : 0,
+        provider: this.provider,
+        providerConfigured: process.env.IMESSAGEORSMS === 'true' ? 'iMessage' : 'SMS',
         providerBreakdown: {
           iMessage: this.stats.totaliMessageSent,
           sms: this.stats.totalSmsSent - this.stats.totalMmsSent,
@@ -1172,8 +1096,7 @@ class PollingService {
         syncSettings: {
           activeOnly: this.syncOnlyActive,
           activeDaysThreshold: this.activeDaysThreshold
-        },
-        providerCommands: Object.keys(this.providerCommands)
+        }
       },
       apiUsage: {
         total: this.apiCalls.total,
