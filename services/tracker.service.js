@@ -30,15 +30,18 @@ class CommentTracker {
       driver: sqlite3.Database
     });
 
-    // Create tables if they don't exist
+    // Create main table if it doesn't exist
     await this.db.exec(`
-      -- Table for tracking contacts
       CREATE TABLE IF NOT EXISTS monitored_contacts (
         contact_id TEXT PRIMARY KEY,
         phone_number TEXT NOT NULL,
         last_checked INTEGER,
         last_activity INTEGER DEFAULT 0,
         last_provider TEXT,
+        is_active INTEGER DEFAULT 1,
+        failure_count INTEGER DEFAULT 0,
+        last_failure_reason TEXT,
+        last_failure_time INTEGER,
         created_at INTEGER DEFAULT (strftime('%s', 'now')),
         updated_at INTEGER DEFAULT (strftime('%s', 'now'))
       );
@@ -72,45 +75,89 @@ class CommentTracker {
       CREATE INDEX IF NOT EXISTS idx_processed_comments_hash ON processed_comments(comment_hash);
       CREATE INDEX IF NOT EXISTS idx_processed_comments_contact ON processed_comments(contact_id);
       CREATE INDEX IF NOT EXISTS idx_monitored_contacts_activity ON monitored_contacts(last_activity DESC);
+      CREATE INDEX IF NOT EXISTS idx_monitored_contacts_active ON monitored_contacts(is_active);
       CREATE INDEX IF NOT EXISTS idx_known_conversations_active ON known_conversations(is_active);
     `);
 
-    // Check and add missing columns to monitored_contacts
+    // Get current columns in monitored_contacts
     const tableInfo = await this.db.all(`PRAGMA table_info(monitored_contacts)`);
     const columns = tableInfo.map(col => col.name);
     
-    // Add missing columns if they don't exist
-    if (!columns.includes('is_active')) {
-      await this.db.exec(`ALTER TABLE monitored_contacts ADD COLUMN is_active INTEGER DEFAULT 1`);
-      console.log('✅ Added is_active column to monitored_contacts');
+    console.log('📋 Current columns in monitored_contacts:', columns.join(', '));
+    
+    // Add missing columns one by one
+    const columnsToAdd = {
+      'is_active': 'INTEGER DEFAULT 1',
+      'failure_count': 'INTEGER DEFAULT 0',
+      'last_failure_reason': 'TEXT',
+      'last_failure_time': 'INTEGER',
+      'created_at': 'INTEGER DEFAULT (strftime(\'%s\', \'now\'))',
+      'updated_at': 'INTEGER DEFAULT (strftime(\'%s\', \'now\'))'
+    };
+    
+    for (const [colName, colType] of Object.entries(columnsToAdd)) {
+      if (!columns.includes(colName)) {
+        try {
+          await this.db.exec(`ALTER TABLE monitored_contacts ADD COLUMN ${colName} ${colType}`);
+          console.log(`✅ Added column: ${colName}`);
+        } catch (err) {
+          console.log(`⚠️ Could not add column ${colName}: ${err.message}`);
+        }
+      }
     }
     
-    if (!columns.includes('failure_count')) {
-      await this.db.exec(`ALTER TABLE monitored_contacts ADD COLUMN failure_count INTEGER DEFAULT 0`);
-      console.log('✅ Added failure_count column to monitored_contacts');
+    // Also check processed_comments table for missing columns
+    const pcTableInfo = await this.db.all(`PRAGMA table_info(processed_comments)`);
+    const pcColumns = pcTableInfo.map(col => col.name);
+    
+    if (!pcColumns.includes('conversation_id')) {
+      try {
+        await this.db.exec(`ALTER TABLE processed_comments ADD COLUMN conversation_id TEXT`);
+        console.log(`✅ Added conversation_id column to processed_comments`);
+      } catch (err) {
+        console.log(`⚠️ Could not add conversation_id: ${err.message}`);
+      }
     }
     
-    if (!columns.includes('last_failure_reason')) {
-      await this.db.exec(`ALTER TABLE monitored_contacts ADD COLUMN last_failure_reason TEXT`);
-      console.log('✅ Added last_failure_reason column to monitored_contacts');
+    // Check known_conversations table
+    const kcTableInfo = await this.db.all(`PRAGMA table_info(known_conversations)`);
+    const kcColumns = kcTableInfo.map(col => col.name);
+    
+    if (!kcColumns.includes('is_active')) {
+      try {
+        await this.db.exec(`ALTER TABLE known_conversations ADD COLUMN is_active INTEGER DEFAULT 1`);
+        console.log(`✅ Added is_active column to known_conversations`);
+      } catch (err) {
+        console.log(`⚠️ Could not add is_active to known_conversations: ${err.message}`);
+      }
     }
     
-    if (!columns.includes('last_failure_time')) {
-      await this.db.exec(`ALTER TABLE monitored_contacts ADD COLUMN last_failure_time INTEGER`);
-      console.log('✅ Added last_failure_time column to monitored_contacts');
+    if (!kcColumns.includes('created_at')) {
+      try {
+        await this.db.exec(`ALTER TABLE known_conversations ADD COLUMN created_at INTEGER DEFAULT (strftime('%s', 'now'))`);
+        console.log(`✅ Added created_at column to known_conversations`);
+      } catch (err) {
+        console.log(`⚠️ Could not add created_at to known_conversations: ${err.message}`);
+      }
     }
 
     // Update existing rows to have default values
     await this.db.exec(`
       UPDATE monitored_contacts SET is_active = 1 WHERE is_active IS NULL;
       UPDATE monitored_contacts SET failure_count = 0 WHERE failure_count IS NULL;
+      UPDATE monitored_contacts SET created_at = strftime('%s', 'now') WHERE created_at IS NULL;
+      UPDATE monitored_contacts SET updated_at = strftime('%s', 'now') WHERE updated_at IS NULL;
     `);
 
     await this.refreshCache();
 
+    // Get final stats
+    const finalColumns = await this.db.all(`PRAGMA table_info(monitored_contacts)`);
     console.log('✅ Comment tracker initialized');
     console.log(`   Database: ${this.dbPath}`);
+    console.log(`   Final columns: ${finalColumns.map(c => c.name).join(', ')}`);
     console.log(`   Cached comments: ${this.cache.size}`);
+    
     return this.db;
   }
 
