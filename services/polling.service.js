@@ -16,18 +16,18 @@ class PollingService {
     
     console.log(`📱 Provider configured: ${this.provider.toUpperCase()} (IMESSAGEORSMS=${process.env.IMESSAGEORSMS})`);
     
-    // EXTREMELY CONSERVATIVE SETTINGS - MAXIMUM SAFETY
-    this.batchSize = options.batchSize || 2;
-    this.syncBatchSize = options.syncBatchSize || 3;
-    this.pollInterval = options.pollInterval || '*/15 * * * *';
+    // 50 CONTACTS/HOUR CONFIGURATION
+    this.batchSize = options.batchSize || 7;                    // 7 contacts per poll
+    this.syncBatchSize = options.syncBatchSize || 10;
+    this.pollInterval = options.pollInterval || '*/12 * * * *'; // Every 12 minutes (5 polls per hour)
     
-    // YOUR REQUESTED DELAYS
-    this.delayBetweenContacts = options.delayBetweenContacts || 60000;
-    this.delayAfterRateLimit = options.delayAfterRateLimit || 1800000;
-    this.delayBetweenPolls = options.delayBetweenPolls || 300000;
-    this.delayAfterError = options.delayAfterError || 1800000;
-    this.delayBetweenPages = options.delayBetweenPages || 120000;
-    this.syncInterval = options.syncInterval || '0 0 * * *';
+    // TIMING CONFIGURATION FOR 50 CONTACTS/HOUR
+    this.delayBetweenContacts = options.delayBetweenContacts || 30000;  // 30 seconds between contacts
+    this.delayAfterRateLimit = options.delayAfterRateLimit || 600000;  // 10 minutes
+    this.delayBetweenPolls = options.delayBetweenPolls || 120000;      // 2 minutes between polls
+    this.delayAfterError = options.delayAfterError || 300000;          // 5 minutes
+    this.delayBetweenPages = options.delayBetweenPages || 2000;        // 2 seconds
+    this.syncInterval = options.syncInterval || '0 */4 * * *';         // Every 4 hours
     
     // Active contact sync settings
     this.syncOnlyActive = options.syncOnlyActive !== false;
@@ -43,11 +43,11 @@ class PollingService {
     this.lastErrorTime = 0;
     this.consecutiveErrors = 0;
     
-    // Rate limiting - API call tracking
+    // Rate limiting - API call tracking (optimized for 50 contacts/hour)
     this.lastApiCallTime = 0;
-    this.minDelayBetweenCalls = 2000; // 2 seconds minimum between API calls
+    this.minDelayBetweenCalls = 1000;      // 1 second minimum between API calls
     this.apiCallTimestamps = [];
-    this.maxCallsPerMinute = 45; // Conservative limit
+    this.maxCallsPerMinute = 60;           // 60 calls per minute (well below GHL's 100 limit)
     
     // Store last known rate limit headers
     this.lastRateLimitHeaders = {
@@ -96,6 +96,11 @@ class PollingService {
     
     console.log('📊 PollingService instance created');
     console.log(`   Provider: ${this.provider.toUpperCase()} (from IMESSAGEORSMS env var)`);
+    console.log(`   Target: 50 contacts/hour`);
+    console.log(`   Batch size: ${this.batchSize} contacts/poll`);
+    console.log(`   Poll interval: ${this.pollInterval} (5 polls/hour)`);
+    console.log(`   Delay between contacts: ${this.delayBetweenContacts/1000} seconds`);
+    console.log(`   Expected throughput: ~${this.batchSize * 5} contacts/hour`);
     console.log(`   Active contact sync: ${this.syncOnlyActive ? 'ON' : 'OFF'}`);
     if (this.syncOnlyActive) {
       console.log(`   Active days threshold: ${this.activeDaysThreshold} days`);
@@ -129,7 +134,7 @@ class PollingService {
     
     const callsInLastMinute = this.apiCallTimestamps.length;
     
-    if (callsInLastMinute > this.maxCallsPerMinute - 5) {
+    if (callsInLastMinute > this.maxCallsPerMinute - 10) {
       console.warn(`⚠️ High API call rate: ${callsInLastMinute} calls in last minute (limit: ${this.maxCallsPerMinute})`);
     }
     
@@ -147,7 +152,6 @@ class PollingService {
 
   // Rate-limited API call wrapper
   async makeAPICall(fn, callName = 'API Call', retryCount = 0) {
-    // Track rate limits
     await this.trackApiCallRate();
     
     try {
@@ -205,10 +209,6 @@ class PollingService {
         endpoint
       };
     }
-  }
-
-  calculateRateLimitTrend() {
-    return null;
   }
 
   trackApiCall(endpoint, type = 'other', count = 1) {
@@ -276,22 +276,20 @@ class PollingService {
     console.log(`   IMESSAGEORSMS = ${process.env.IMESSAGEORSMS || 'not set'}`);
     console.log(`   Using provider: ${this.provider.toUpperCase()}`);
     console.log(`   ${this.provider === 'bluebubbles' ? '📱 Sending via iMessage (BlueBubbles)' : '📱 Sending via SMS (Tall Bob)'}`);
-    console.log(`⏱️ DELAY CONFIGURATION:`);
+    console.log(`⏱️ 50 CONTACTS/HOUR CONFIGURATION:`);
+    console.log(`   • Batch size: ${this.batchSize} contacts/poll`);
+    console.log(`   • Poll interval: ${this.pollInterval} (5 polls/hour)`);
     console.log(`   • Between contacts: ${this.delayBetweenContacts/1000} seconds`);
-    console.log(`   • After rate limit: ${this.delayAfterRateLimit/60000} minutes`);
     console.log(`   • Between polls: ${this.delayBetweenPolls/60000} minutes`);
-    console.log(`   • After error: ${this.delayAfterError/60000} minutes`);
-    console.log(`   • Poll interval: ${this.pollInterval}`);
-    console.log(`   • Batch size: ${this.batchSize} contacts per poll`);
+    console.log(`   • Expected throughput: ~${this.batchSize * 5} contacts/hour`);
+    console.log(`   • After rate limit: ${this.delayAfterRateLimit/60000} minutes`);
+    console.log(`   • Min API delay: ${this.minDelayBetweenCalls/1000} seconds`);
     console.log(`   • Sync interval: ${this.syncInterval}`);
-    console.log(`   • Sync batch size: ${this.syncBatchSize} contacts per page`);
-    console.log(`   • Initial sync delay: ${this.initialSyncDelay/60000} minutes`);
+    console.log(`   • Sync batch size: ${this.syncBatchSize} contacts/page`);
     console.log(`   • Active contact sync: ${this.syncOnlyActive ? 'ON' : 'OFF'}`);
     if (this.syncOnlyActive) {
       console.log(`   • Active days threshold: ${this.activeDaysThreshold} days`);
     }
-    console.log(`   • Min API delay: ${this.minDelayBetweenCalls/1000} seconds`);
-    console.log(`   • 🚫 NO @ COMMANDS - All messages use ${this.provider.toUpperCase()}`);
     console.log(`===============================================\n`);
     
     console.log(`📊 Rate limit monitoring enabled`);
@@ -417,10 +415,9 @@ class PollingService {
       console.log(`\n📤 ===== SENDING REPLY =====`);
       console.log(`   Contact ID: ${contact.contact_id}`);
       console.log(`   Phone: ${contact.phone_number}`);
-      console.log(`   Provider: ${this.provider.toUpperCase()} (from IMESSAGEORSMS env var)`);
+      console.log(`   Provider: ${this.provider.toUpperCase()}`);
       console.log(`   Message: "${replyText.substring(0, 100)}"`);
       console.log(`   Image: ${imageUrl ? 'Yes (' + imageUrl + ')' : 'No'}`);
-      console.log(`   🚫 NO @ COMMANDS - Using fixed provider`);
       
       let result;
       
@@ -687,18 +684,13 @@ class PollingService {
             console.log(`      Date: ${latestComment.date}`);
             console.log(`      Conv ID: ${latestComment.conversationId}`);
             
-            // NO @ COMMAND PARSING - Use the entire comment as the message
             const cleanMessage = latestComment.text.trim();
-            
-            console.log(`      💬 Will send: "${cleanMessage.substring(0, 100)}"`);
-            console.log(`      🚫 No @ command parsing - using fixed provider: ${this.provider.toUpperCase()}`);
-            
             const imageUrl = this.extractImageUrl(cleanMessage);
+            
             if (imageUrl) {
               console.log(`      📸 Image detected: ${imageUrl}`);
             }
             
-            // Skip @reply commands (internal notes only)
             if (cleanMessage.toLowerCase().startsWith('@reply')) {
               console.log(`      ⏭️ Comment starts with @reply - SKIPPING (internal note)`);
               skippedComments++;
@@ -794,7 +786,8 @@ class PollingService {
       console.log(`      • SMS/MMS sent: ${this.stats.totalMmsSent}`);
       console.log(`      • Total messages: ${this.stats.totalSmsSent + this.stats.totaliMessageSent}`);
       console.log(`      • Total stale removed: ${this.stats.staleContactsRemoved}`);
-      console.log(`   ${this.getApiUsageString()}`);
+      console.log(`   📊 Rate limit status: ${this.getApiUsageString()}`);
+      console.log(`   ⚡ Throughput: ~${Math.round(processedCount / (duration / 3600000))} contacts/hour`);
       
       console.log(`\n⏱️ Waiting ${this.delayBetweenPolls/60000} minutes before next poll`);
       await this.delay(this.delayBetweenPolls);
@@ -1087,6 +1080,7 @@ class PollingService {
         trackedContacts: this.tracker.getCount ? this.tracker.getCount() : 0,
         provider: this.provider,
         providerConfigured: process.env.IMESSAGEORSMS === 'true' ? 'iMessage' : 'SMS',
+        targetThroughput: '50 contacts/hour',
         providerBreakdown: {
           iMessage: this.stats.totaliMessageSent,
           sms: this.stats.totalSmsSent - this.stats.totalMmsSent,
