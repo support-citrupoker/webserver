@@ -30,69 +30,18 @@ class CommentTracker {
       driver: sqlite3.Database
     });
 
-    // Create main table if it doesn't exist
-    await this.db.exec(`
-      CREATE TABLE IF NOT EXISTS monitored_contacts (
-        contact_id TEXT PRIMARY KEY,
-        phone_number TEXT NOT NULL,
-        last_checked INTEGER,
-        last_activity INTEGER DEFAULT 0,
-        last_provider TEXT,
-        is_active INTEGER DEFAULT 1,
-        failure_count INTEGER DEFAULT 0,
-        last_failure_reason TEXT,
-        last_failure_time INTEGER,
-        created_at INTEGER DEFAULT (strftime('%s', 'now')),
-        updated_at INTEGER DEFAULT (strftime('%s', 'now'))
-      );
-      
-      -- Table for tracking ALL processed comments
-      CREATE TABLE IF NOT EXISTS processed_comments (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        contact_id TEXT NOT NULL,
-        comment_hash TEXT NOT NULL,
-        comment_text TEXT,
-        conversation_id TEXT,
-        processed_at INTEGER DEFAULT (strftime('%s', 'now')),
-        FOREIGN KEY (contact_id) REFERENCES monitored_contacts(contact_id) ON DELETE CASCADE,
-        UNIQUE(contact_id, comment_hash)
-      );
-      
-      -- Table for tracking known conversations
-      CREATE TABLE IF NOT EXISTS known_conversations (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        contact_id TEXT NOT NULL,
-        conversation_id TEXT NOT NULL,
-        last_message_date INTEGER,
-        is_active INTEGER DEFAULT 1,
-        last_seen INTEGER DEFAULT (strftime('%s', 'now')),
-        created_at INTEGER DEFAULT (strftime('%s', 'now')),
-        FOREIGN KEY (contact_id) REFERENCES monitored_contacts(contact_id) ON DELETE CASCADE,
-        UNIQUE(contact_id, conversation_id)
-      );
-      
-      -- Indexes
-      CREATE INDEX IF NOT EXISTS idx_processed_comments_hash ON processed_comments(comment_hash);
-      CREATE INDEX IF NOT EXISTS idx_processed_comments_contact ON processed_comments(contact_id);
-      CREATE INDEX IF NOT EXISTS idx_monitored_contacts_activity ON monitored_contacts(last_activity DESC);
-      CREATE INDEX IF NOT EXISTS idx_monitored_contacts_active ON monitored_contacts(is_active);
-      CREATE INDEX IF NOT EXISTS idx_known_conversations_active ON known_conversations(is_active);
-    `);
-
     // Get current columns in monitored_contacts
     const tableInfo = await this.db.all(`PRAGMA table_info(monitored_contacts)`);
     const columns = tableInfo.map(col => col.name);
     
     console.log('📋 Current columns in monitored_contacts:', columns.join(', '));
     
-    // Add missing columns one by one
+    // Add missing columns one by one (without non-constant defaults)
     const columnsToAdd = {
       'is_active': 'INTEGER DEFAULT 1',
       'failure_count': 'INTEGER DEFAULT 0',
       'last_failure_reason': 'TEXT',
-      'last_failure_time': 'INTEGER',
-      'created_at': 'INTEGER DEFAULT (strftime(\'%s\', \'now\'))',
-      'updated_at': 'INTEGER DEFAULT (strftime(\'%s\', \'now\'))'
+      'last_failure_time': 'INTEGER'
     };
     
     for (const [colName, colType] of Object.entries(columnsToAdd)) {
@@ -103,6 +52,30 @@ class CommentTracker {
         } catch (err) {
           console.log(`⚠️ Could not add column ${colName}: ${err.message}`);
         }
+      }
+    }
+    
+    // Check if created_at exists, if not add it without default first, then update
+    if (!columns.includes('created_at')) {
+      try {
+        await this.db.exec(`ALTER TABLE monitored_contacts ADD COLUMN created_at INTEGER`);
+        console.log(`✅ Added column: created_at`);
+        // Set default values for existing rows
+        await this.db.exec(`UPDATE monitored_contacts SET created_at = strftime('%s', 'now') WHERE created_at IS NULL`);
+      } catch (err) {
+        console.log(`⚠️ Could not add created_at: ${err.message}`);
+      }
+    }
+    
+    // Check if updated_at exists
+    if (!columns.includes('updated_at')) {
+      try {
+        await this.db.exec(`ALTER TABLE monitored_contacts ADD COLUMN updated_at INTEGER`);
+        console.log(`✅ Added column: updated_at`);
+        // Set default values for existing rows
+        await this.db.exec(`UPDATE monitored_contacts SET updated_at = strftime('%s', 'now') WHERE updated_at IS NULL`);
+      } catch (err) {
+        console.log(`⚠️ Could not add updated_at: ${err.message}`);
       }
     }
     
@@ -134,14 +107,15 @@ class CommentTracker {
     
     if (!kcColumns.includes('created_at')) {
       try {
-        await this.db.exec(`ALTER TABLE known_conversations ADD COLUMN created_at INTEGER DEFAULT (strftime('%s', 'now'))`);
+        await this.db.exec(`ALTER TABLE known_conversations ADD COLUMN created_at INTEGER`);
         console.log(`✅ Added created_at column to known_conversations`);
+        await this.db.exec(`UPDATE known_conversations SET created_at = strftime('%s', 'now') WHERE created_at IS NULL`);
       } catch (err) {
         console.log(`⚠️ Could not add created_at to known_conversations: ${err.message}`);
       }
     }
 
-    // Update existing rows to have default values
+    // Update any NULL values to defaults
     await this.db.exec(`
       UPDATE monitored_contacts SET is_active = 1 WHERE is_active IS NULL;
       UPDATE monitored_contacts SET failure_count = 0 WHERE failure_count IS NULL;
