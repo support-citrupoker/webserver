@@ -90,6 +90,7 @@ const pollingService = new PollingService(
     pollInterval: '*/12 * * * *',       // Every 12 minutes
     
     // SYNC SETTINGS (keep conservative)
+    debug: true,  
     syncBatchSize: 5,                   // Sync 5 contacts per page
     syncInterval: '0 */6 * * *',        // Sync every 6 hours
     delayBetweenPages: 120000,          // 2 minutes between sync pages

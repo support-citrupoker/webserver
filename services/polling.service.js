@@ -11,7 +11,11 @@ class PollingService {
     const useIMessage = process.env.IMESSAGEORSMS === 'true';
     this.provider = useIMessage ? 'bluebubbles' : 'tallbob';
     
+    // Add debug mode - set to true to see more details
+    this.debug = options.debug || false;
+    
     console.log(`📱 Provider: ${this.provider.toUpperCase()}`);
+    console.log(`   Debug mode: ${this.debug ? 'ON' : 'OFF'}\n`);
     
     this.batchSize = options.batchSize || 5;
     this.syncBatchSize = options.syncBatchSize || 10;
@@ -317,6 +321,10 @@ class PollingService {
         return;
       }
 
+      if (this.debug) {
+        console.log(`\n🔍 Checking ${contacts.length} contacts...`);
+      }
+
       let newReplies = 0;
       let staleRemovedThisPoll = 0;
 
@@ -344,7 +352,7 @@ class PollingService {
           
           if (!contactExists) continue;
           
-          // Silent conversation search
+          // Search conversations
           const conversations = await this.makeAPICall(
             () => this.ghlService.searchConversations({
               contactId: contact.contact_id,
@@ -353,18 +361,44 @@ class PollingService {
             'searchConversations'
           );
 
-          if (!conversations || conversations.length === 0) continue;
+          if (!conversations || conversations.length === 0) {
+            if (this.debug) {
+              console.log(`   📭 No conversations for ${contact.phone_number}`);
+            }
+            continue;
+          }
 
-          // Find latest internal comment
+          if (this.debug) {
+            console.log(`\n   📋 Contact: ${contact.phone_number} (${conversations.length} conversations)`);
+          }
+
+          // Find latest internal comment - DEBUG what fields are available
           let latestComment = null;
           for (const conv of conversations) {
-            if (conv.lastInternalComment) {
+            // Log available fields for first conversation (debug only)
+            if (this.debug && conv === conversations[0]) {
+              console.log(`      Available fields: ${Object.keys(conv).join(', ')}`);
+              console.log(`      Type: ${conv.type}`);
+              console.log(`      Last message date: ${conv.lastMessageDate}`);
+              console.log(`      Last internal comment: ${conv.lastInternalComment || 'NOT FOUND'}`);
+              console.log(`      Note: ${conv.note || 'NOT FOUND'}`);
+              console.log(`      Internal comment: ${conv.internalComment || 'NOT FOUND'}`);
+              console.log(`      Comment: ${conv.comment || 'NOT FOUND'}`);
+            }
+            
+            // Try different possible field names for internal comments
+            const internalComment = conv.lastInternalComment || conv.note || conv.internalComment || conv.comment;
+            
+            if (internalComment) {
               if (!latestComment || new Date(conv.lastMessageDate) > new Date(latestComment.date)) {
                 latestComment = {
-                  text: conv.lastInternalComment,
+                  text: internalComment,
                   date: conv.lastMessageDate,
                   conversationId: conv.id
                 };
+                if (this.debug) {
+                  console.log(`      ✅ Found comment: "${internalComment.substring(0, 50)}..."`);
+                }
               }
             }
           }
@@ -375,6 +409,9 @@ class PollingService {
             
             // Skip @reply internal notes
             if (cleanMessage.toLowerCase().startsWith('@reply')) {
+              if (this.debug) {
+                console.log(`      ⏭️ Skipping @reply comment`);
+              }
               continue;
             }
             
@@ -386,7 +423,6 @@ class PollingService {
               );
               
               if (isNew) {
-                // ONLY SHOW THIS LINE FOR INTERNAL COMMENTS
                 console.log(`\n💬 New internal comment from ${contact.phone_number}:`);
                 console.log(`   "${cleanMessage.substring(0, 100)}${cleanMessage.length > 100 ? '...' : ''}"`);
                 
@@ -406,8 +442,12 @@ class PollingService {
                   );
                   newReplies++;
                 }
+              } else if (this.debug) {
+                console.log(`   ⏭️ Already processed comment from ${contact.phone_number}`);
               }
             }
+          } else if (this.debug) {
+            console.log(`   📭 No internal comments found for ${contact.phone_number}`);
           }
 
           await this.delay(this.delayBetweenContacts);
@@ -436,6 +476,8 @@ class PollingService {
 
       if (newReplies > 0) {
         console.log(`📊 Poll complete: ${newReplies} replies sent (${Math.round(duration/1000)}s)\n`);
+      } else if (this.debug) {
+        console.log(`📊 Poll complete: no new replies (${Math.round(duration/1000)}s)\n`);
       }
       
       await this.delay(this.delayBetweenPolls);
