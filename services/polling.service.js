@@ -11,8 +11,6 @@ class PollingService {
     const useIMessage = process.env.IMESSAGEORSMS === 'true';
     this.provider = useIMessage ? 'bluebubbles' : 'tallbob';
     
-    this.debug = options.debug || false;
-    
     this.batchSize = options.batchSize || 5;
     this.syncBatchSize = options.syncBatchSize || 10;
     this.pollInterval = options.pollInterval || '*/12 * * * *';
@@ -80,8 +78,9 @@ class PollingService {
       rateLimitWaits: 0
     };
     
-    console.log(`📱 Provider: ${this.provider.toUpperCase()}`);
-    console.log(`   ⚡ ${this.batchSize} contacts/poll | ${this.provider.toUpperCase()}\n`);
+    console.log(`\n🚀 Polling Service Started`);
+    console.log(`   Provider: ${this.provider.toUpperCase()}`);
+    console.log(`   Checking ${this.batchSize} contacts every ${this.pollInterval}\n`);
   }
 
   delay(ms) {
@@ -107,7 +106,6 @@ class PollingService {
     if (callsInLastMinute >= this.maxCallsPerMinute) {
       const oldestCall = this.apiCallTimestamps[0];
       const timeToWait = 60000 - (now - oldestCall) + 1000;
-      if (this.debug) console.warn(`🚦 Rate limit waiting ${Math.ceil(timeToWait/1000)}s`);
       await this.delay(timeToWait);
       return this.trackApiCallRate();
     }
@@ -124,7 +122,6 @@ class PollingService {
     } catch (error) {
       if ((error.statusCode === 429 || error.message?.includes('Too Many Requests')) && retryCount < 3) {
         const waitTime = (retryCount + 1) * 5000;
-        if (this.debug) console.log(`🚦 Rate limit hit, retry ${retryCount + 1}/3`);
         await this.delay(waitTime);
         return this.makeAPICall(fn, callName, retryCount + 1);
       }
@@ -139,8 +136,6 @@ class PollingService {
 
   isRateLimited() {
     if (this.rateLimitedUntil > Date.now()) {
-      const waitTime = Math.ceil((this.rateLimitedUntil - Date.now()) / 60000);
-      if (this.debug) console.log(`⏳ Rate limited: ${waitTime} min remaining`);
       return true;
     }
     return false;
@@ -151,7 +146,6 @@ class PollingService {
     this.rateLimitedUntil = Date.now() + waitTime;
     this.stats.rateLimitWaits++;
     this.apiCalls.rateLimitHits++;
-    if (this.debug) console.log(`🚦 Rate limit engaged - ${Math.ceil(waitTime/60000)} min cooldown`);
   }
 
   trackApiCall(endpoint, type = 'other', count = 1) {
@@ -184,9 +178,6 @@ class PollingService {
   }
 
   async initialize() {
-    console.log(`🚀 Polling Service Ready`);
-    console.log(`   Provider: ${this.provider.toUpperCase()}\n`);
-    
     if (this.tracker && typeof this.tracker.initialize === 'function') {
       await this.tracker.initialize();
     }
@@ -228,8 +219,8 @@ class PollingService {
   async sendReply(contact, replyText, imageUrl, locationId) {
     try {
       console.log(`\n📤 SENDING ${this.provider.toUpperCase()} REPLY`);
-      console.log(`   To: ${contact.phone_number}`);
-      console.log(`   Msg: "${replyText.substring(0, 80)}${replyText.length > 80 ? '...' : ''}"`);
+      console.log(`   📱 To: ${contact.phone_number}`);
+      console.log(`   💬 Message: "${replyText.substring(0, 100)}${replyText.length > 100 ? '...' : ''}"`);
       
       let result;
       
@@ -258,7 +249,8 @@ class PollingService {
           this.stats.totaliMessageSent++;
         }
         
-        console.log(`   ✅ Sent! ID: ${result.guid || result.messageId}\n`);
+        console.log(`   ✅ Sent via iMessage (BlueBubbles)`);
+        console.log(`   🆔 Message ID: ${result.guid || result.messageId}\n`);
         this.stats.totalSmsSent++;
         return { success: true, provider: 'bluebubbles', result };
         
@@ -274,6 +266,7 @@ class PollingService {
           });
           this.stats.totalMmsSent++;
           this.stats.totalSmsSent++;
+          console.log(`   ✅ Sent via MMS (Tall Bob)`);
         } else {
           this.trackApiCall('sendSMS', 'sendSMS');
           result = await this.tallbobService.sendSMS({
@@ -283,9 +276,10 @@ class PollingService {
             reference: `sms_${contact.contact_id}_${Date.now()}`
           });
           this.stats.totalSmsSent++;
+          console.log(`   ✅ Sent via SMS (Tall Bob)`);
         }
         
-        console.log(`   ✅ Sent! ID: ${result.messageId}\n`);
+        console.log(`   🆔 Message ID: ${result.messageId}\n`);
         return { success: true, provider: 'tallbob', result };
       }
       
@@ -330,7 +324,7 @@ class PollingService {
         if (this.isRateLimited()) break;
 
         try {
-          // Check if contact exists
+          // Check if contact exists (silent)
           let contactExists = true;
           try {
             await this.makeAPICall(
@@ -350,7 +344,7 @@ class PollingService {
           
           if (!contactExists) continue;
           
-          // Search conversations
+          // Search conversations (silent)
           const conversations = await this.makeAPICall(
             () => this.ghlService.searchConversations({
               contactId: contact.contact_id,
@@ -364,12 +358,9 @@ class PollingService {
           }
 
           // Find the latest internal comment
-          // In the new GHL API, internal comments are identified by isLastMessageInternalComment = true
-          // and the comment text is in lastMessageBody
           let latestComment = null;
           
           for (const conv of conversations) {
-            // Check if the last message was an internal comment
             if (conv.isLastMessageInternalComment === true && conv.lastMessageBody) {
               const commentText = conv.lastMessageBody;
               
@@ -387,7 +378,6 @@ class PollingService {
             const cleanMessage = latestComment.text.trim();
             const imageUrl = this.extractImageUrl(cleanMessage);
             
-            // Skip @reply internal notes
             if (cleanMessage.toLowerCase().startsWith('@reply')) {
               continue;
             }
@@ -400,8 +390,13 @@ class PollingService {
               );
               
               if (isNew) {
-                console.log(`\n💬 New internal comment from ${contact.phone_number}:`);
-                console.log(`   "${cleanMessage.substring(0, 100)}${cleanMessage.length > 100 ? '...' : ''}"`);
+                // THIS IS THE MAIN LOG - INTERNAL COMMENT DETECTED
+                console.log(`\n${'='.repeat(60)}`);
+                console.log(`💬 INTERNAL COMMENT DETECTED`);
+                console.log(`   📞 From: ${contact.phone_number}`);
+                console.log(`   💭 Message: "${cleanMessage}"`);
+                console.log(`   🕐 Time: ${new Date().toLocaleTimeString()}`);
+                console.log(`${'='.repeat(60)}`);
                 
                 const sendResult = await this.sendReply(
                   contact,
@@ -418,6 +413,9 @@ class PollingService {
                     latestComment.conversationId
                   );
                   newReplies++;
+                  console.log(`✅ Successfully processed and replied\n`);
+                } else {
+                  console.log(`❌ Failed to send reply\n`);
                 }
               }
             }
@@ -448,7 +446,7 @@ class PollingService {
       this.stats.lastRun = new Date().toISOString();
 
       if (newReplies > 0) {
-        console.log(`📊 Poll complete: ${newReplies} replies sent (${Math.round(duration/1000)}s)\n`);
+        console.log(`📊 Poll cycle complete: ${newReplies} message${newReplies > 1 ? 's' : ''} sent in ${Math.round(duration/1000)}s\n`);
       }
       
       await this.delay(this.delayBetweenPolls);
@@ -541,13 +539,8 @@ class PollingService {
         }
       }
       
-      if (activeCount > 0 && this.debug) {
-        const finalCount = await this.tracker.getCount();
-        console.log(`📋 Synced ${activeCount} active contacts (${finalCount} total tracked)\n`);
-      }
-      
     } catch (error) {
-      if (this.debug) console.error(`❌ Sync error: ${error.message}`);
+      // Silent sync errors
     }
   }
 
@@ -586,13 +579,8 @@ class PollingService {
         }
       }
       
-      if (totalAdded > 0 && this.debug) {
-        const finalCount = await this.tracker.getCount();
-        console.log(`📋 Synced ${totalAdded} contacts (${finalCount} total tracked)\n`);
-      }
-      
     } catch (error) {
-      if (this.debug) console.error(`❌ Sync error: ${error.message}`);
+      // Silent sync errors
     }
   }
 
