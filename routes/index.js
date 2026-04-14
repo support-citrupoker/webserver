@@ -21,7 +21,6 @@ async function makeAPICall(fn, retryCount = 0, callName = 'API Call') {
   
   if (timeSinceLastCall < MIN_API_DELAY) {
     const waitTime = MIN_API_DELAY - timeSinceLastCall;
-    console.log(`⏸️ [${callName}] Rate limit protection: Waiting ${waitTime}ms`);
     await delay(waitTime);
   }
   
@@ -31,8 +30,8 @@ async function makeAPICall(fn, retryCount = 0, callName = 'API Call') {
     return result;
   } catch (error) {
     if (error.statusCode === 429 && retryCount < MAX_RETRIES) {
-      const waitTime = (retryCount + 1) * 3000; // 3s, 6s, 9s
-      console.log(`🚦 [${callName}] Rate limit hit! Retry ${retryCount + 1}/${MAX_RETRIES} after ${waitTime}ms`);
+      const waitTime = (retryCount + 1) * 3000;
+      console.log(`🚦 Rate limit hit! Retry ${retryCount + 1}/${MAX_RETRIES} after ${waitTime}ms`);
       await delay(waitTime);
       return makeAPICall(fn, retryCount + 1, callName);
     }
@@ -44,12 +43,11 @@ async function makeAPICall(fn, retryCount = 0, callName = 'API Call') {
 setInterval(() => {
   const now = Date.now();
   for (const [id, timestamp] of processedExpiry.entries()) {
-    if (now - timestamp > 3600000) { // 1 hour
+    if (now - timestamp > 3600000) {
       processedEvents.delete(id);
       processedExpiry.delete(id);
     }
   }
-  console.log(`🧹 Cleaned up deduplication cache. Current size: ${processedEvents.size}`);
 }, 3600000);
 
 async function isEventProcessed(eventId) {
@@ -88,7 +86,6 @@ export default (app, tallbobService, ghlService, bluebubblesService) => {
     if (provider === 'SMS' || provider === 'MMS') {
       const validEvents = ['message_received', 'message_received_mms'];
       if (!validEvents.includes(messageData.eventType)) {
-        console.log(`⏭️ Ignoring event type: ${messageData.eventType}`);
         return;
       }
     }
@@ -96,7 +93,6 @@ export default (app, tallbobService, ghlService, bluebubblesService) => {
     // Create unique event ID based on provider and message data
     let eventId;
     if (provider === 'BLUEBUBBLES') {
-      // BlueBubbles - extract GUID from nested data
       const blueData = messageData.data || messageData;
       eventId = blueData.guid || messageData.guid || blueData.messageGuid || 
                 `${blueData.handle?.address}_${blueData.dateCreated}`;
@@ -106,46 +102,29 @@ export default (app, tallbobService, ghlService, bluebubblesService) => {
     }
     
     if (!eventId) {
-      console.log('⚠️ No event ID found, using fallback');
       eventId = `${provider}_${Date.now()}_${Math.random()}`;
     }
     
-    // Add provider prefix to event ID to avoid conflicts between providers
     const uniqueEventId = `${provider}_${eventId}`;
 
     // Check if already processed
     const processed = await isEventProcessed(uniqueEventId);
-    if (processed) {
-      console.log(`⏭️ Event ${uniqueEventId} already processed, skipping`);
-      return;
-    }
+    if (processed) return;
 
     // Check if currently being processed by another request
     const isLocked = await isEventProcessing(uniqueEventId);
-    if (isLocked) {
-      console.log(`⏭️ Event ${uniqueEventId} is currently being processed, skipping`);
-      return;
-    }
+    if (isLocked) return;
 
     // Acquire processing lock
     const locked = await lockEvent(uniqueEventId);
-    if (!locked) {
-      console.log(`⏭️ Could not acquire lock for event ${uniqueEventId}, skipping`);
-      return;
-    }
-
-    console.log(`📨 Processing ${provider} message... Event ID: ${uniqueEventId}`);
+    if (!locked) return;
 
     // Extract data based on provider
     let customerPhone, providerNumber, messageText, timestamp, media, contactID, campaignID, reference;
     
     if (provider === 'BLUEBUBBLES') {
-      // BlueBubbles webhook format
       const blueData = messageData.data || messageData;
       
-      console.log('📱 BlueBubbles raw data:', JSON.stringify(blueData, null, 2));
-      
-      // Extract phone number from handle
       if (blueData.handle && blueData.handle.address) {
         customerPhone = blueData.handle.address;
       } else if (blueData.sender) {
@@ -153,48 +132,24 @@ export default (app, tallbobService, ghlService, bluebubblesService) => {
       } else if (blueData.from) {
         customerPhone = blueData.from;
       } else {
-        console.error('❌ Could not extract phone number from BlueBubbles message');
         await unlockEvent(uniqueEventId);
         return;
       }
       
-      // Extract message text
       messageText = blueData.text || blueData.body || '';
-      
-      // Extract timestamp (BlueBubbles uses milliseconds)
       timestamp = blueData.dateCreated ? Math.floor(blueData.dateCreated / 1000) : Math.floor(Date.now() / 1000);
-      
-      // Extract media attachments
       media = blueData.attachments || [];
-      
-      // Extract GUID as message ID
       reference = blueData.guid || messageData.guid;
-      
-      // Set provider number (the iMessage account)
       providerNumber = process.env.BLUEBUBBLES_IMESSAGE_ACCOUNT || 'iMessage';
-      
-      // Get contact ID if available
       contactID = blueData.contactId || messageData.contactId;
       campaignID = blueData.campaignId || messageData.campaignId;
       
-      console.log(`📱 BlueBubbles message extracted:`);
-      console.log(`   From: ${customerPhone}`);
-      console.log(`   Text: "${messageText}"`);
-      console.log(`   GUID: ${reference}`);
-      console.log(`   Timestamp: ${timestamp}`);
-      console.log(`   Attachments: ${media.length}`);
-      
-      // Format phone numbers if they look like phone numbers (not emails)
-      if (customerPhone && customerPhone.match(/^\+\d+$/)) {
-        // Already in + format, keep as is
-      } else if (customerPhone && customerPhone.match(/^\d+$/)) {
+      if (customerPhone && customerPhone.match(/^\d+$/)) {
         customerPhone = `+${customerPhone.replace(/\D/g, '')}`;
       }
       
     } else {
-      // Tall Bob format
       if (!messageData.recipient || !messageData.sentVia) {
-        console.error('❌ Missing required fields: recipient or sentVia');
         await unlockEvent(uniqueEventId);
         return;
       }
@@ -211,19 +166,14 @@ export default (app, tallbobService, ghlService, bluebubblesService) => {
     const locationId = ghlService.locationId || process.env.GHL_LOCATION_ID;
 
     if (!locationId) {
-      console.error('❌ No locationId configured');
       await unlockEvent(uniqueEventId);
       return;
     }
 
     const receivedDate = timestamp ? new Date(timestamp * 1000).toISOString() : new Date().toISOString();
-    
-    // Determine message type for GHL
     const messageType = provider === 'BLUEBUBBLES' ? 'iMessage' : (provider === 'MMS' ? 'MMS' : 'SMS');
 
     try {
-      // Find or create contact
-      console.log(`👤 Upserting contact with identifier: ${customerPhone}`);
       const contactData = {
         phone: customerPhone,
         firstName: messageData.firstName || 'Unknown',
@@ -238,38 +188,25 @@ export default (app, tallbobService, ghlService, bluebubblesService) => {
         ]
       };
       
-      // Add email for BlueBubbles if it's an email address
       if (provider === 'BLUEBUBBLES' && customerPhone && customerPhone.includes('@')) {
         contactData.email = customerPhone;
       }
       
-      // Rate-limited API call 1: Upsert contact
       const { contact, action } = await makeAPICall(
         () => ghlService.upsertContact(contactData, locationId),
         0,
         'upsertContact'
       );
-      console.log(`✅ Contact ${action}: ${contact.id}`);
 
-      // Delay between API calls
       await delay(1000);
 
-      // Get or create conversation
-      console.log(`💬 Getting/creating conversation for contact: ${contact.id}`);
-      
-      // Rate-limited API call 2: Get or create conversation
       const { conversation } = await makeAPICall(
         () => ghlService.getOrCreateConversation(contact.id, messageType, locationId),
         0,
         'getOrCreateConversation'
       );
-      console.log(`✅ Conversation: ${conversation.id}`);
 
-      // Delay between API calls
       await delay(1000);
-
-      // Add message to conversation
-      console.log(`📝 Adding ${messageType} message to conversation: ${conversation.id}`);
       
       const messagePayload = {
         contactId: contact.id,
@@ -284,22 +221,17 @@ export default (app, tallbobService, ghlService, bluebubblesService) => {
         provider: provider === 'BLUEBUBBLES' ? 'BlueBubbles' : 'Tall Bob'
       };
       
-      // Rate-limited API call 3: Add message to conversation
       await makeAPICall(
         () => ghlService.addMessageToConversation(conversation.id, messagePayload, locationId),
         0,
         'addMessageToConversation'
       );
 
-      // Mark as processed (only after successful processing)
       await markEventProcessed(uniqueEventId);
-      console.log(`✅ ${messageType} message processed for contact ${contact.id} (${action})`);
 
     } catch (error) {
-      console.error(`❌ Error processing ${provider} message:`, error);
-      // Don't mark as processed so it can be retried
+      console.error(`❌ Error processing ${provider} message:`, error.message);
     } finally {
-      // Always release the lock
       await unlockEvent(uniqueEventId);
     }
   }
@@ -309,8 +241,6 @@ export default (app, tallbobService, ghlService, bluebubblesService) => {
   app.post('/tallbob/incoming/sms', async (req, res) => {
     try {
       const messageData = req.body;
-      console.log('📩 Received Tall Bob SMS webhook:', messageData);
-      
       res.status(200).json({ received: true, timestamp: new Date().toISOString() });
       
       setImmediate(async () => {
@@ -318,7 +248,6 @@ export default (app, tallbobService, ghlService, bluebubblesService) => {
       });
       
     } catch (error) {
-      console.error('❌ Error in SMS webhook:', error);
       res.status(200).json({ received: true, error: error.message });
     }
   });
@@ -326,8 +255,6 @@ export default (app, tallbobService, ghlService, bluebubblesService) => {
   app.post('/tallbob/incoming/mms', async (req, res) => {
     try {
       const messageData = req.body;
-      console.log('📩 Received Tall Bob MMS webhook:', messageData);
-      
       res.status(200).json({ received: true, timestamp: new Date().toISOString() });
       
       setImmediate(async () => {
@@ -335,7 +262,6 @@ export default (app, tallbobService, ghlService, bluebubblesService) => {
       });
       
     } catch (error) {
-      console.error('❌ Error in MMS webhook:', error);
       res.status(200).json({ received: true, error: error.message });
     }
   });
@@ -345,12 +271,9 @@ export default (app, tallbobService, ghlService, bluebubblesService) => {
   app.post('/bluebubbles/incoming', async (req, res) => {
     try {
       const messageData = req.body;
-      console.log('📱 Received BlueBubbles iMessage webhook:', JSON.stringify(messageData, null, 2));
       
-      // Verify BlueBubbles API password if configured
       const apiPassword = req.query.password || req.headers['x-bluebubbles-password'];
       if (process.env.BLUEBUBBLES_PASSWORD && apiPassword !== process.env.BLUEBUBBLES_PASSWORD) {
-        console.error('❌ Invalid BlueBubbles webhook password');
         return res.status(401).json({ error: 'Unauthorized' });
       }
       
@@ -361,7 +284,6 @@ export default (app, tallbobService, ghlService, bluebubblesService) => {
       });
       
     } catch (error) {
-      console.error('❌ Error in BlueBubbles webhook:', error);
       res.status(200).json({ received: true, error: error.message });
     }
   });
@@ -371,7 +293,7 @@ export default (app, tallbobService, ghlService, bluebubblesService) => {
   app.post('/tallbob/send-message', async (req, res) => {
     try {
       const { to, from, message, mediaUrl, contactId, locationId, conversationId } = req.body;
-      console.log('📤 Send Tall Bob message request:', { to, from, message, mediaUrl, contactId });
+      console.log(`\n📤 Sending SMS via Tall Bob to ${to}`);
 
       if (!to || !from || !message) {
         return res.status(400).json({ 
@@ -398,7 +320,6 @@ export default (app, tallbobService, ghlService, bluebubblesService) => {
         });
       }
 
-      // Log to GHL with rate limiting
       if (contactId || conversationId) {
         try {
           const targetLocationId = locationId || ghlService.locationId;
@@ -432,13 +353,13 @@ export default (app, tallbobService, ghlService, bluebubblesService) => {
               0,
               'addMessageToConversation-outbound'
             );
-            console.log(`✅ Outbound Tall Bob message logged in GHL`);
           }
         } catch (ghlError) {
-          console.error('⚠️ Failed to log message in GHL:', ghlError.message);
+          console.error('⚠️ Failed to log in GHL:', ghlError.message);
         }
       }
 
+      console.log(`   ✅ Sent! ID: ${result.messageId}\n`);
       res.json({
         success: true,
         messageId: result.messageId,
@@ -447,7 +368,7 @@ export default (app, tallbobService, ghlService, bluebubblesService) => {
       });
 
     } catch (error) {
-      console.error('❌ Error sending Tall Bob message:', error);
+      console.error(`❌ Send failed: ${error.message}`);
       res.status(500).json({ success: false, error: error.message });
     }
   });
@@ -457,7 +378,7 @@ export default (app, tallbobService, ghlService, bluebubblesService) => {
   app.post('/bluebubbles/send-message', async (req, res) => {
     try {
       const { to, from, message, mediaUrl, contactId, locationId, conversationId, effectId } = req.body;
-      console.log('📱 Send BlueBubbles iMessage request:', { to, from, message, mediaUrl, contactId });
+      console.log(`\n📱 Sending iMessage via BlueBubbles to ${to}`);
 
       if (!to || !from || !message) {
         return res.status(400).json({ 
@@ -473,7 +394,6 @@ export default (app, tallbobService, ghlService, bluebubblesService) => {
         result = await bluebubblesService.sendMessage({ to, from, message, effectId });
       }
 
-      // Log to GHL with rate limiting
       if (contactId || conversationId) {
         try {
           const targetLocationId = locationId || ghlService.locationId;
@@ -507,13 +427,13 @@ export default (app, tallbobService, ghlService, bluebubblesService) => {
               0,
               'addMessageToConversation-outbound-blue'
             );
-            console.log(`✅ Outbound iMessage logged in GHL`);
           }
         } catch (ghlError) {
-          console.error('⚠️ Failed to log iMessage in GHL:', ghlError.message);
+          console.error('⚠️ Failed to log in GHL:', ghlError.message);
         }
       }
 
+      console.log(`   ✅ Sent! ID: ${result.guid}\n`);
       res.json({
         success: true,
         messageId: result.guid,
@@ -522,7 +442,7 @@ export default (app, tallbobService, ghlService, bluebubblesService) => {
       });
 
     } catch (error) {
-      console.error('❌ Error sending iMessage:', error);
+      console.error(`❌ Send failed: ${error.message}`);
       res.status(500).json({ success: false, error: error.message });
     }
   });
@@ -532,8 +452,6 @@ export default (app, tallbobService, ghlService, bluebubblesService) => {
   app.post('/ghl/bluebubbles-webhook', async (req, res) => {
     try {
       const webhookData = req.body;
-      console.log('📨 Received GHL webhook for BlueBubbles:', webhookData);
-      
       res.status(200).json({ received: true });
       
       setImmediate(async () => {
@@ -541,7 +459,6 @@ export default (app, tallbobService, ghlService, bluebubblesService) => {
           const { contactId, locationId, message, to, from, mediaUrl, conversationId } = webhookData;
           
           if (!to || !from || !message) {
-            console.error('❌ Missing required fields in GHL webhook');
             return;
           }
           
@@ -551,16 +468,12 @@ export default (app, tallbobService, ghlService, bluebubblesService) => {
             body: JSON.stringify({ to, from, message, mediaUrl, contactId, locationId, conversationId })
           });
           
-          const result = await response.json();
-          console.log('✅ Message sent via BlueBubbles:', result);
-          
         } catch (error) {
-          console.error('❌ Error processing GHL webhook:', error);
+          console.error('❌ GHL webhook error:', error.message);
         }
       });
       
     } catch (error) {
-      console.error('❌ Error in GHL webhook handler:', error);
       res.status(200).json({ received: true, error: error.message });
     }
   });
@@ -568,8 +481,6 @@ export default (app, tallbobService, ghlService, bluebubblesService) => {
   app.post('/ghl/tallbob-webhook', async (req, res) => {
     try {
       const webhookData = req.body;
-      console.log('📨 Received GHL webhook for Tall Bob:', webhookData);
-      
       res.status(200).json({ received: true });
       
       setImmediate(async () => {
@@ -577,7 +488,6 @@ export default (app, tallbobService, ghlService, bluebubblesService) => {
           const { contactId, locationId, message, to, from, mediaUrl, conversationId } = webhookData;
           
           if (!to || !from || !message) {
-            console.error('❌ Missing required fields in GHL webhook');
             return;
           }
           
@@ -587,16 +497,12 @@ export default (app, tallbobService, ghlService, bluebubblesService) => {
             body: JSON.stringify({ to, from, message, mediaUrl, contactId, locationId, conversationId })
           });
           
-          const result = await response.json();
-          console.log('✅ Message sent via Tall Bob:', result);
-          
         } catch (error) {
-          console.error('❌ Error processing GHL webhook:', error);
+          console.error('❌ GHL webhook error:', error.message);
         }
       });
       
     } catch (error) {
-      console.error('❌ Error in GHL webhook handler:', error);
       res.status(200).json({ received: true, error: error.message });
     }
   });
@@ -645,23 +551,23 @@ export default (app, tallbobService, ghlService, bluebubblesService) => {
   });
 
   app.get('/test/bluebubbles-status', async (req, res) => {
-  try {
-    const status = await bluebubblesService.getStatus();
-    res.json({
-      success: true,
-      status: status,
-      config: {
-        serverUrl: process.env.BLUEBUBBLES_SERVER_URL,
-        hasPassword: !!process.env.BLUEBUBBLES_PASSWORD
-      }
-    });
-  } catch (error) {
-    res.json({
-      success: false,
-      error: error.message
-    });
-  }
-});
+    try {
+      const status = await bluebubblesService.getStatus();
+      res.json({
+        success: true,
+        status: status,
+        config: {
+          serverUrl: process.env.BLUEBUBBLES_SERVER_URL,
+          hasPassword: !!process.env.BLUEBUBBLES_PASSWORD
+        }
+      });
+    } catch (error) {
+      res.json({
+        success: false,
+        error: error.message
+      });
+    }
+  });
 
   return app;
 };
