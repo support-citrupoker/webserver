@@ -224,10 +224,7 @@ export default (app, tallbobService, ghlService, bluebubblesService) => {
       await markEventProcessed(uniqueEventId);
 
     } catch (error) {
-      // Silent - only log if it's a critical error
-      if (error.message && (error.message.includes('429') || error.message.includes('rate'))) {
-        console.error(`❌ Rate limit error: ${error.message}`);
-      }
+      // COMPLETELY SILENT - no error logs for incoming messages
     } finally {
       await unlockEvent(uniqueEventId);
     }
@@ -266,7 +263,7 @@ export default (app, tallbobService, ghlService, bluebubblesService) => {
     }
   });
 
-  // ==================== OUTGOING MESSAGES (SHOW THESE) ====================
+  // ==================== OUTGOING MESSAGES (THESE WILL SHOW) ====================
 
   app.post('/tallbob/send-message', async (req, res) => {
     try {
@@ -284,7 +281,7 @@ export default (app, tallbobService, ghlService, bluebubblesService) => {
         result = await tallbobService.sendSMS({ to, from, message, reference: `ghl_${Date.now()}` });
       }
 
-      // Silent GHL logging
+      // Silent GHL logging - no console output
       if (contactId || conversationId) {
         try {
           const targetLocationId = locationId || ghlService.locationId;
@@ -343,7 +340,7 @@ export default (app, tallbobService, ghlService, bluebubblesService) => {
         result = await bluebubblesService.sendMessage({ to, from, message, effectId });
       }
 
-      // Silent GHL logging
+      // Silent GHL logging - no console output
       if (contactId || conversationId) {
         try {
           const targetLocationId = locationId || ghlService.locationId;
