@@ -127,14 +127,8 @@ export default (app, tallbobService, ghlService, bluebubblesService) => {
       messageText = blueData.text || blueData.body || '';
       timestamp = blueData.dateCreated ? Math.floor(blueData.dateCreated / 1000) : Math.floor(Date.now() / 1000);
       
-      // FIX: Extract attachment URLs properly
       if (blueData.attachments && blueData.attachments.length > 0) {
-        media = blueData.attachments.map(att => {
-          // Try to get the actual URL from the attachment
-          if (att.url) return att.url;
-          if (att.guid && att.transferName) return `attachment://${att.guid}`;
-          return null;
-        }).filter(url => url !== null);
+        media = blueData.attachments.map(att => att.url || att.guid).filter(url => url);
       } else {
         media = [];
       }
@@ -230,7 +224,7 @@ export default (app, tallbobService, ghlService, bluebubblesService) => {
       await markEventProcessed(uniqueEventId);
 
     } catch (error) {
-      // Only log errors, not successes
+      // Only log errors
       if (error.message && !error.message.includes('already processed')) {
         console.error(`❌ ${provider} error:`, error.message);
       }
@@ -239,14 +233,12 @@ export default (app, tallbobService, ghlService, bluebubblesService) => {
     }
   }
 
-  // ==================== INCOMING WEBHOOKS (silent) ====================
+  // ==================== INCOMING WEBHOOKS (COMPLETELY SILENT) ====================
 
   app.post('/tallbob/incoming/sms', async (req, res) => {
     try {
       res.status(200).json({ received: true });
-      setImmediate(async () => {
-        await processIncomingMessage(req.body, 'SMS');
-      });
+      setImmediate(() => processIncomingMessage(req.body, 'SMS'));
     } catch (error) {
       res.status(200).json({ received: true });
     }
@@ -255,9 +247,7 @@ export default (app, tallbobService, ghlService, bluebubblesService) => {
   app.post('/tallbob/incoming/mms', async (req, res) => {
     try {
       res.status(200).json({ received: true });
-      setImmediate(async () => {
-        await processIncomingMessage(req.body, 'MMS');
-      });
+      setImmediate(() => processIncomingMessage(req.body, 'MMS'));
     } catch (error) {
       res.status(200).json({ received: true });
     }
@@ -270,15 +260,13 @@ export default (app, tallbobService, ghlService, bluebubblesService) => {
         return res.status(401).json({ error: 'Unauthorized' });
       }
       res.status(200).json({ received: true });
-      setImmediate(async () => {
-        await processIncomingMessage(req.body, 'BLUEBUBBLES');
-      });
+      setImmediate(() => processIncomingMessage(req.body, 'BLUEBUBBLES'));
     } catch (error) {
       res.status(200).json({ received: true });
     }
   });
 
-  // ==================== OUTGOING MESSAGES (keep these logs) ====================
+  // ==================== OUTGOING MESSAGES (ONLY THESE SHOW IN LOGS) ====================
 
   app.post('/tallbob/send-message', async (req, res) => {
     try {
@@ -296,6 +284,7 @@ export default (app, tallbobService, ghlService, bluebubblesService) => {
         result = await tallbobService.sendSMS({ to, from, message, reference: `ghl_${Date.now()}` });
       }
 
+      // Silent GHL logging - no console output
       if (contactId || conversationId) {
         try {
           const targetLocationId = locationId || ghlService.locationId;
@@ -325,7 +314,7 @@ export default (app, tallbobService, ghlService, bluebubblesService) => {
             );
           }
         } catch (ghlError) {
-          // Silent fail for GHL logging
+          // Silent fail
         }
       }
 
@@ -354,6 +343,7 @@ export default (app, tallbobService, ghlService, bluebubblesService) => {
         result = await bluebubblesService.sendMessage({ to, from, message, effectId });
       }
 
+      // Silent GHL logging - no console output
       if (contactId || conversationId) {
         try {
           const targetLocationId = locationId || ghlService.locationId;
@@ -383,7 +373,7 @@ export default (app, tallbobService, ghlService, bluebubblesService) => {
             );
           }
         } catch (ghlError) {
-          // Silent fail for GHL logging
+          // Silent fail
         }
       }
 
