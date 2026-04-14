@@ -11,6 +11,9 @@ class PollingService {
     const useIMessage = process.env.IMESSAGEORSMS === 'true';
     this.provider = useIMessage ? 'bluebubbles' : 'tallbob';
     
+    // TEMPORARY: Enable debug to see what's happening
+    this.debug = true;  // <-- SET TO TRUE TEMPORARILY
+    
     this.batchSize = options.batchSize || 5;
     this.syncBatchSize = options.syncBatchSize || 10;
     this.pollInterval = options.pollInterval || '*/12 * * * *';
@@ -78,7 +81,7 @@ class PollingService {
       rateLimitWaits: 0
     };
     
-    console.log(`\n🚀 Polling Service Started`);
+    console.log(`\n🚀 Polling Service Started (DEBUG MODE ON)`);
     console.log(`   Provider: ${this.provider.toUpperCase()}`);
     console.log(`   Checking ${this.batchSize} contacts every ${this.pollInterval}\n`);
   }
@@ -106,6 +109,7 @@ class PollingService {
     if (callsInLastMinute >= this.maxCallsPerMinute) {
       const oldestCall = this.apiCallTimestamps[0];
       const timeToWait = 60000 - (now - oldestCall) + 1000;
+      if (this.debug) console.log(`⏸️ Rate limit: waiting ${Math.ceil(timeToWait/1000)}s`);
       await this.delay(timeToWait);
       return this.trackApiCallRate();
     }
@@ -122,6 +126,7 @@ class PollingService {
     } catch (error) {
       if ((error.statusCode === 429 || error.message?.includes('Too Many Requests')) && retryCount < 3) {
         const waitTime = (retryCount + 1) * 5000;
+        if (this.debug) console.log(`🚦 Rate limit hit, retry ${retryCount + 1}/3`);
         await this.delay(waitTime);
         return this.makeAPICall(fn, callName, retryCount + 1);
       }
@@ -311,7 +316,12 @@ class PollingService {
     try {
       const contacts = await this.tracker.getContactsToCheck(this.batchSize);
       
+      if (this.debug) {
+        console.log(`\n🔍 Poll started - checking ${contacts.length} contacts`);
+      }
+      
       if (contacts.length === 0) {
+        if (this.debug) console.log(`📭 No contacts to check`);
         await this.delay(this.delayBetweenPolls);
         this.isPolling = false;
         return;
@@ -323,8 +333,12 @@ class PollingService {
       for (const contact of contacts) {
         if (this.isRateLimited()) break;
 
+        if (this.debug) {
+          console.log(`\n📞 Checking contact: ${contact.phone_number} (${contact.contact_id})`);
+        }
+
         try {
-          // Check if contact exists (silent)
+          // Check if contact exists
           let contactExists = true;
           try {
             await this.makeAPICall(
@@ -337,6 +351,7 @@ class PollingService {
                 await this.tracker.removeContact(contact.contact_id);
                 staleRemovedThisPoll++;
                 this.stats.staleContactsRemoved++;
+                if (this.debug) console.log(`   🗑️ Contact removed (not found in GHL)`);
               }
               contactExists = false;
             }
@@ -344,7 +359,7 @@ class PollingService {
           
           if (!contactExists) continue;
           
-          // Search conversations (silent)
+          // Search conversations
           const conversations = await this.makeAPICall(
             () => this.ghlService.searchConversations({
               contactId: contact.contact_id,
@@ -353,16 +368,38 @@ class PollingService {
             'searchConversations'
           );
 
+          if (this.debug) {
+            console.log(`   📋 Found ${conversations?.length || 0} conversations`);
+          }
+
           if (!conversations || conversations.length === 0) {
             continue;
+          }
+
+          // DEBUG: Log what fields are available in the first conversation
+          if (this.debug && conversations.length > 0) {
+            const firstConv = conversations[0];
+            console.log(`   🔍 Available fields: ${Object.keys(firstConv).join(', ')}`);
+            console.log(`   🔍 isLastMessageInternalComment: ${firstConv.isLastMessageInternalComment}`);
+            console.log(`   🔍 lastMessageBody: ${firstConv.lastMessageBody?.substring(0, 50) || 'null'}`);
+            console.log(`   🔍 lastMessageType: ${firstConv.lastMessageType}`);
           }
 
           // Find the latest internal comment
           let latestComment = null;
           
           for (const conv of conversations) {
-            if (conv.isLastMessageInternalComment === true && conv.lastMessageBody) {
+            // Check multiple possible field names for internal comments
+            const hasInternalComment = conv.isLastMessageInternalComment === true || 
+                                       conv.lastMessageType === 'INTERNAL_COMMENT' ||
+                                       conv.type === 'internal';
+            
+            if (hasInternalComment && conv.lastMessageBody) {
               const commentText = conv.lastMessageBody;
+              
+              if (this.debug) {
+                console.log(`   💬 Found potential internal comment: "${commentText.substring(0, 50)}..."`);
+              }
               
               if (!latestComment || new Date(conv.lastMessageDate) > new Date(latestComment.date)) {
                 latestComment = {
@@ -379,6 +416,7 @@ class PollingService {
             const imageUrl = this.extractImageUrl(cleanMessage);
             
             if (cleanMessage.toLowerCase().startsWith('@reply')) {
+              if (this.debug) console.log(`   ⏭️ Skipping @reply comment`);
               continue;
             }
             
@@ -389,8 +427,11 @@ class PollingService {
                 latestComment.conversationId
               );
               
+              if (this.debug) {
+                console.log(`   🔍 isNew: ${isNew}`);
+              }
+              
               if (isNew) {
-                // THIS IS THE MAIN LOG - INTERNAL COMMENT DETECTED
                 console.log(`\n${'='.repeat(60)}`);
                 console.log(`💬 INTERNAL COMMENT DETECTED`);
                 console.log(`   📞 From: ${contact.phone_number}`);
@@ -417,8 +458,12 @@ class PollingService {
                 } else {
                   console.log(`❌ Failed to send reply\n`);
                 }
+              } else if (this.debug) {
+                console.log(`   ⏭️ Comment already processed`);
               }
             }
+          } else if (this.debug) {
+            console.log(`   📭 No internal comments found`);
           }
 
           await this.delay(this.delayBetweenContacts);
@@ -447,6 +492,8 @@ class PollingService {
 
       if (newReplies > 0) {
         console.log(`📊 Poll cycle complete: ${newReplies} message${newReplies > 1 ? 's' : ''} sent in ${Math.round(duration/1000)}s\n`);
+      } else if (this.debug) {
+        console.log(`📊 Poll cycle complete: no new messages (${Math.round(duration/1000)}s)\n`);
       }
       
       await this.delay(this.delayBetweenPolls);
@@ -539,8 +586,13 @@ class PollingService {
         }
       }
       
+      if (this.debug && activeCount > 0) {
+        const finalCount = await this.tracker.getCount();
+        console.log(`📋 Synced ${activeCount} active contacts (${finalCount} total)\n`);
+      }
+      
     } catch (error) {
-      // Silent sync errors
+      if (this.debug) console.error(`❌ Sync error: ${error.message}`);
     }
   }
 
@@ -579,8 +631,13 @@ class PollingService {
         }
       }
       
+      if (this.debug && totalAdded > 0) {
+        const finalCount = await this.tracker.getCount();
+        console.log(`📋 Synced ${totalAdded} contacts (${finalCount} total)\n`);
+      }
+      
     } catch (error) {
-      // Silent sync errors
+      if (this.debug) console.error(`❌ Sync error: ${error.message}`);
     }
   }
 
