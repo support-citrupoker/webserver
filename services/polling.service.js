@@ -8,22 +8,26 @@ class PollingService {
     this.bluebubblesService = bluebubblesService;
     this.tracker = tracker;
     
+    // Store location ID
+    this.locationId = options.locationId || process.env.GHL_LOCATION_ID;
+    
+    // Provider from environment variable (NO COMMANDS)
     const useIMessage = process.env.IMESSAGEORSMS === 'true';
     this.provider = useIMessage ? 'bluebubbles' : 'tallbob';
     
-    // TEMPORARY: Enable debug to see what's happening
-    this.debug = true;  // <-- SET TO TRUE TEMPORARILY
+    console.log(`📱 Provider: ${this.provider.toUpperCase()} (IMESSAGEORSMS=${process.env.IMESSAGEORSMS})`);
     
-    this.batchSize = options.batchSize || 5;
-    this.syncBatchSize = options.syncBatchSize || 10;
-    this.pollInterval = options.pollInterval || '*/12 * * * *';
+    // Settings
+    this.batchSize = options.batchSize || 2;
+    this.syncBatchSize = options.syncBatchSize || 3;
+    this.pollInterval = options.pollInterval || '*/15 * * * *';
     
-    this.delayBetweenContacts = options.delayBetweenContacts || 36000;
-    this.delayAfterRateLimit = options.delayAfterRateLimit || 600000;
-    this.delayBetweenPolls = options.delayBetweenPolls || 120000;
-    this.delayAfterError = options.delayAfterError || 300000;
-    this.delayBetweenPages = options.delayBetweenPages || 2000;
-    this.syncInterval = options.syncInterval || '0 */4 * * *';
+    this.delayBetweenContacts = options.delayBetweenContacts || 60000;
+    this.delayAfterRateLimit = options.delayAfterRateLimit || 1800000;
+    this.delayBetweenPolls = options.delayBetweenPolls || 300000;
+    this.delayAfterError = options.delayAfterError || 1800000;
+    this.delayBetweenPages = options.delayBetweenPages || 120000;
+    this.syncInterval = options.syncInterval || '0 0 * * *';
     
     this.syncOnlyActive = options.syncOnlyActive !== false;
     this.activeDaysThreshold = options.activeDaysThreshold || 60;
@@ -36,9 +40,9 @@ class PollingService {
     this.consecutiveErrors = 0;
     
     this.lastApiCallTime = 0;
-    this.minDelayBetweenCalls = 1500;
+    this.minDelayBetweenCalls = 2000;
     this.apiCallTimestamps = [];
-    this.maxCallsPerMinute = 40;
+    this.maxCallsPerMinute = 45;
     
     this.lastRateLimitHeaders = {
       dailyRemaining: null,
@@ -81,9 +85,7 @@ class PollingService {
       rateLimitWaits: 0
     };
     
-    console.log(`\n🚀 Polling Service Started (DEBUG MODE ON)`);
-    console.log(`   Provider: ${this.provider.toUpperCase()}`);
-    console.log(`   Checking ${this.batchSize} contacts every ${this.pollInterval}\n`);
+    console.log(`   ⚡ ${this.batchSize} contacts/poll | ${this.provider.toUpperCase()}\n`);
   }
 
   delay(ms) {
@@ -109,7 +111,7 @@ class PollingService {
     if (callsInLastMinute >= this.maxCallsPerMinute) {
       const oldestCall = this.apiCallTimestamps[0];
       const timeToWait = 60000 - (now - oldestCall) + 1000;
-      if (this.debug) console.log(`⏸️ Rate limit: waiting ${Math.ceil(timeToWait/1000)}s`);
+      console.warn(`🚦 Rate limit waiting ${Math.ceil(timeToWait/1000)}s`);
       await this.delay(timeToWait);
       return this.trackApiCallRate();
     }
@@ -126,7 +128,7 @@ class PollingService {
     } catch (error) {
       if ((error.statusCode === 429 || error.message?.includes('Too Many Requests')) && retryCount < 3) {
         const waitTime = (retryCount + 1) * 5000;
-        if (this.debug) console.log(`🚦 Rate limit hit, retry ${retryCount + 1}/3`);
+        console.log(`🚦 Rate limit hit, retry ${retryCount + 1}/3`);
         await this.delay(waitTime);
         return this.makeAPICall(fn, callName, retryCount + 1);
       }
@@ -141,6 +143,8 @@ class PollingService {
 
   isRateLimited() {
     if (this.rateLimitedUntil > Date.now()) {
+      const waitTime = Math.ceil((this.rateLimitedUntil - Date.now()) / 60000);
+      console.log(`⏳ Rate limited: ${waitTime} min remaining`);
       return true;
     }
     return false;
@@ -151,6 +155,7 @@ class PollingService {
     this.rateLimitedUntil = Date.now() + waitTime;
     this.stats.rateLimitWaits++;
     this.apiCalls.rateLimitHits++;
+    console.log(`🚦 Rate limit engaged - ${Math.ceil(waitTime/60000)} min cooldown`);
   }
 
   trackApiCall(endpoint, type = 'other', count = 1) {
@@ -183,6 +188,9 @@ class PollingService {
   }
 
   async initialize() {
+    console.log(`🚀 Polling Service Ready`);
+    console.log(`   Provider: ${this.provider.toUpperCase()}\n`);
+    
     if (this.tracker && typeof this.tracker.initialize === 'function') {
       await this.tracker.initialize();
     }
@@ -224,8 +232,8 @@ class PollingService {
   async sendReply(contact, replyText, imageUrl, locationId) {
     try {
       console.log(`\n📤 SENDING ${this.provider.toUpperCase()} REPLY`);
-      console.log(`   📱 To: ${contact.phone_number}`);
-      console.log(`   💬 Message: "${replyText.substring(0, 100)}${replyText.length > 100 ? '...' : ''}"`);
+      console.log(`   To: ${contact.phone_number}`);
+      console.log(`   Message: "${replyText.substring(0, 80)}${replyText.length > 80 ? '...' : ''}"`);
       
       let result;
       
@@ -254,8 +262,7 @@ class PollingService {
           this.stats.totaliMessageSent++;
         }
         
-        console.log(`   ✅ Sent via iMessage (BlueBubbles)`);
-        console.log(`   🆔 Message ID: ${result.guid || result.messageId}\n`);
+        console.log(`   ✅ Sent! ID: ${result.guid || result.messageId}\n`);
         this.stats.totalSmsSent++;
         return { success: true, provider: 'bluebubbles', result };
         
@@ -271,7 +278,6 @@ class PollingService {
           });
           this.stats.totalMmsSent++;
           this.stats.totalSmsSent++;
-          console.log(`   ✅ Sent via MMS (Tall Bob)`);
         } else {
           this.trackApiCall('sendSMS', 'sendSMS');
           result = await this.tallbobService.sendSMS({
@@ -281,10 +287,9 @@ class PollingService {
             reference: `sms_${contact.contact_id}_${Date.now()}`
           });
           this.stats.totalSmsSent++;
-          console.log(`   ✅ Sent via SMS (Tall Bob)`);
         }
         
-        console.log(`   🆔 Message ID: ${result.messageId}\n`);
+        console.log(`   ✅ Sent! ID: ${result.messageId}\n`);
         return { success: true, provider: 'tallbob', result };
       }
       
@@ -316,12 +321,7 @@ class PollingService {
     try {
       const contacts = await this.tracker.getContactsToCheck(this.batchSize);
       
-      if (this.debug) {
-        console.log(`\n🔍 Poll started - checking ${contacts.length} contacts`);
-      }
-      
       if (contacts.length === 0) {
-        if (this.debug) console.log(`📭 No contacts to check`);
         await this.delay(this.delayBetweenPolls);
         this.isPolling = false;
         return;
@@ -332,10 +332,6 @@ class PollingService {
 
       for (const contact of contacts) {
         if (this.isRateLimited()) break;
-
-        if (this.debug) {
-          console.log(`\n📞 Checking contact: ${contact.phone_number} (${contact.contact_id})`);
-        }
 
         try {
           // Check if contact exists
@@ -351,7 +347,6 @@ class PollingService {
                 await this.tracker.removeContact(contact.contact_id);
                 staleRemovedThisPoll++;
                 this.stats.staleContactsRemoved++;
-                if (this.debug) console.log(`   🗑️ Contact removed (not found in GHL)`);
               }
               contactExists = false;
             }
@@ -368,42 +363,19 @@ class PollingService {
             'searchConversations'
           );
 
-          if (this.debug) {
-            console.log(`   📋 Found ${conversations?.length || 0} conversations`);
-          }
-
           if (!conversations || conversations.length === 0) {
             continue;
           }
 
-          // DEBUG: Log what fields are available in the first conversation
-          if (this.debug && conversations.length > 0) {
-            const firstConv = conversations[0];
-            console.log(`   🔍 Available fields: ${Object.keys(firstConv).join(', ')}`);
-            console.log(`   🔍 isLastMessageInternalComment: ${firstConv.isLastMessageInternalComment}`);
-            console.log(`   🔍 lastMessageBody: ${firstConv.lastMessageBody?.substring(0, 50) || 'null'}`);
-            console.log(`   🔍 lastMessageType: ${firstConv.lastMessageType}`);
-          }
-
-          // Find the latest internal comment
+          // ORIGINAL WORKING LOGIC: Look for lastInternalComment field
           let latestComment = null;
           
           for (const conv of conversations) {
-            // Check multiple possible field names for internal comments
-            const hasInternalComment = conv.isLastMessageInternalComment === true || 
-                                       conv.lastMessageType === 'INTERNAL_COMMENT' ||
-                                       conv.type === 'internal';
-            
-            if (hasInternalComment && conv.lastMessageBody) {
-              const commentText = conv.lastMessageBody;
-              
-              if (this.debug) {
-                console.log(`   💬 Found potential internal comment: "${commentText.substring(0, 50)}..."`);
-              }
-              
+            // Use the original field name that worked
+            if (conv.lastInternalComment) {
               if (!latestComment || new Date(conv.lastMessageDate) > new Date(latestComment.date)) {
                 latestComment = {
-                  text: commentText,
+                  text: conv.lastInternalComment,
                   date: conv.lastMessageDate,
                   conversationId: conv.id
                 };
@@ -415,8 +387,8 @@ class PollingService {
             const cleanMessage = latestComment.text.trim();
             const imageUrl = this.extractImageUrl(cleanMessage);
             
+            // Skip @reply internal notes
             if (cleanMessage.toLowerCase().startsWith('@reply')) {
-              if (this.debug) console.log(`   ⏭️ Skipping @reply comment`);
               continue;
             }
             
@@ -427,23 +399,15 @@ class PollingService {
                 latestComment.conversationId
               );
               
-              if (this.debug) {
-                console.log(`   🔍 isNew: ${isNew}`);
-              }
-              
               if (isNew) {
-                console.log(`\n${'='.repeat(60)}`);
-                console.log(`💬 INTERNAL COMMENT DETECTED`);
-                console.log(`   📞 From: ${contact.phone_number}`);
-                console.log(`   💭 Message: "${cleanMessage}"`);
-                console.log(`   🕐 Time: ${new Date().toLocaleTimeString()}`);
-                console.log(`${'='.repeat(60)}`);
+                console.log(`\n💬 New internal comment from ${contact.phone_number}:`);
+                console.log(`   "${cleanMessage.substring(0, 100)}${cleanMessage.length > 100 ? '...' : ''}"`);
                 
                 const sendResult = await this.sendReply(
                   contact,
                   cleanMessage,
                   imageUrl,
-                  process.env.GHL_LOCATION_ID
+                  this.locationId
                 );
                 
                 if (sendResult.success) {
@@ -454,16 +418,9 @@ class PollingService {
                     latestComment.conversationId
                   );
                   newReplies++;
-                  console.log(`✅ Successfully processed and replied\n`);
-                } else {
-                  console.log(`❌ Failed to send reply\n`);
                 }
-              } else if (this.debug) {
-                console.log(`   ⏭️ Comment already processed`);
               }
             }
-          } else if (this.debug) {
-            console.log(`   📭 No internal comments found`);
           }
 
           await this.delay(this.delayBetweenContacts);
@@ -491,9 +448,7 @@ class PollingService {
       this.stats.lastRun = new Date().toISOString();
 
       if (newReplies > 0) {
-        console.log(`📊 Poll cycle complete: ${newReplies} message${newReplies > 1 ? 's' : ''} sent in ${Math.round(duration/1000)}s\n`);
-      } else if (this.debug) {
-        console.log(`📊 Poll cycle complete: no new messages (${Math.round(duration/1000)}s)\n`);
+        console.log(`📊 Poll complete: ${newReplies} replies sent (${Math.round(duration/1000)}s)\n`);
       }
       
       await this.delay(this.delayBetweenPolls);
@@ -535,7 +490,7 @@ class PollingService {
       while (hasMore && !this.isRateLimited()) {
         const response = await this.makeAPICall(
           () => this.ghlService.client.contacts.searchContactsAdvanced({
-            locationId: process.env.GHL_LOCATION_ID,
+            locationId: this.locationId,
             pageLimit: this.syncBatchSize,
             page: page
           }),
@@ -586,13 +541,8 @@ class PollingService {
         }
       }
       
-      if (this.debug && activeCount > 0) {
-        const finalCount = await this.tracker.getCount();
-        console.log(`📋 Synced ${activeCount} active contacts (${finalCount} total)\n`);
-      }
-      
     } catch (error) {
-      if (this.debug) console.error(`❌ Sync error: ${error.message}`);
+      // Silent
     }
   }
 
@@ -606,7 +556,7 @@ class PollingService {
       while (hasMore && !this.isRateLimited()) {
         const response = await this.makeAPICall(
           () => this.ghlService.client.contacts.searchContactsAdvanced({
-            locationId: process.env.GHL_LOCATION_ID,
+            locationId: this.locationId,
             pageLimit: this.syncBatchSize,
             page: page
           }),
@@ -631,13 +581,8 @@ class PollingService {
         }
       }
       
-      if (this.debug && totalAdded > 0) {
-        const finalCount = await this.tracker.getCount();
-        console.log(`📋 Synced ${totalAdded} contacts (${finalCount} total)\n`);
-      }
-      
     } catch (error) {
-      if (this.debug) console.error(`❌ Sync error: ${error.message}`);
+      // Silent
     }
   }
 
