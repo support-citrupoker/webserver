@@ -64,7 +64,7 @@ class BlueBubblesService {
         message: message
       };
       
-      console.log(`\n📦 PAYLOAD:`, JSON.stringify(payload, null, 2));
+     
       
       const response = await this.client.post(urlWithPassword, payload, {
         headers: {
