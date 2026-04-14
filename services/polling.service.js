@@ -11,11 +11,7 @@ class PollingService {
     const useIMessage = process.env.IMESSAGEORSMS === 'true';
     this.provider = useIMessage ? 'bluebubbles' : 'tallbob';
     
-    // Add debug mode - set to true to see more details
     this.debug = options.debug || false;
-    
-    console.log(`📱 Provider: ${this.provider.toUpperCase()}`);
-    console.log(`   Debug mode: ${this.debug ? 'ON' : 'OFF'}\n`);
     
     this.batchSize = options.batchSize || 5;
     this.syncBatchSize = options.syncBatchSize || 10;
@@ -84,6 +80,7 @@ class PollingService {
       rateLimitWaits: 0
     };
     
+    console.log(`📱 Provider: ${this.provider.toUpperCase()}`);
     console.log(`   ⚡ ${this.batchSize} contacts/poll | ${this.provider.toUpperCase()}\n`);
   }
 
@@ -110,7 +107,7 @@ class PollingService {
     if (callsInLastMinute >= this.maxCallsPerMinute) {
       const oldestCall = this.apiCallTimestamps[0];
       const timeToWait = 60000 - (now - oldestCall) + 1000;
-      console.warn(`🚦 Rate limit waiting ${Math.ceil(timeToWait/1000)}s`);
+      if (this.debug) console.warn(`🚦 Rate limit waiting ${Math.ceil(timeToWait/1000)}s`);
       await this.delay(timeToWait);
       return this.trackApiCallRate();
     }
@@ -127,7 +124,7 @@ class PollingService {
     } catch (error) {
       if ((error.statusCode === 429 || error.message?.includes('Too Many Requests')) && retryCount < 3) {
         const waitTime = (retryCount + 1) * 5000;
-        console.log(`🚦 Rate limit hit, retry ${retryCount + 1}/3`);
+        if (this.debug) console.log(`🚦 Rate limit hit, retry ${retryCount + 1}/3`);
         await this.delay(waitTime);
         return this.makeAPICall(fn, callName, retryCount + 1);
       }
@@ -135,10 +132,15 @@ class PollingService {
     }
   }
 
+  getApiUsageString() {
+    const percentUsed = Math.round((this.apiCalls.total / 200000) * 100);
+    return `[API: ${this.apiCalls.total} calls (${percentUsed}%)]`;
+  }
+
   isRateLimited() {
     if (this.rateLimitedUntil > Date.now()) {
       const waitTime = Math.ceil((this.rateLimitedUntil - Date.now()) / 60000);
-      console.log(`⏳ Rate limited: ${waitTime} min remaining`);
+      if (this.debug) console.log(`⏳ Rate limited: ${waitTime} min remaining`);
       return true;
     }
     return false;
@@ -149,7 +151,7 @@ class PollingService {
     this.rateLimitedUntil = Date.now() + waitTime;
     this.stats.rateLimitWaits++;
     this.apiCalls.rateLimitHits++;
-    console.log(`🚦 Rate limit engaged - ${Math.ceil(waitTime/60000)} min cooldown`);
+    if (this.debug) console.log(`🚦 Rate limit engaged - ${Math.ceil(waitTime/60000)} min cooldown`);
   }
 
   trackApiCall(endpoint, type = 'other', count = 1) {
@@ -225,7 +227,7 @@ class PollingService {
   
   async sendReply(contact, replyText, imageUrl, locationId) {
     try {
-      console.log(`📤 SENDING ${this.provider.toUpperCase()} REPLY`);
+      console.log(`\n📤 SENDING ${this.provider.toUpperCase()} REPLY`);
       console.log(`   To: ${contact.phone_number}`);
       console.log(`   Msg: "${replyText.substring(0, 80)}${replyText.length > 80 ? '...' : ''}"`);
       
@@ -321,10 +323,6 @@ class PollingService {
         return;
       }
 
-      if (this.debug) {
-        console.log(`\n🔍 Checking ${contacts.length} contacts...`);
-      }
-
       let newReplies = 0;
       let staleRemovedThisPoll = 0;
 
@@ -332,7 +330,7 @@ class PollingService {
         if (this.isRateLimited()) break;
 
         try {
-          // Silent contact fetch
+          // Check if contact exists
           let contactExists = true;
           try {
             await this.makeAPICall(
@@ -362,43 +360,25 @@ class PollingService {
           );
 
           if (!conversations || conversations.length === 0) {
-            if (this.debug) {
-              console.log(`   📭 No conversations for ${contact.phone_number}`);
-            }
             continue;
           }
 
-          if (this.debug) {
-            console.log(`\n   📋 Contact: ${contact.phone_number} (${conversations.length} conversations)`);
-          }
-
-          // Find latest internal comment - DEBUG what fields are available
+          // Find the latest internal comment
+          // In the new GHL API, internal comments are identified by isLastMessageInternalComment = true
+          // and the comment text is in lastMessageBody
           let latestComment = null;
+          
           for (const conv of conversations) {
-            // Log available fields for first conversation (debug only)
-            if (this.debug && conv === conversations[0]) {
-              console.log(`      Available fields: ${Object.keys(conv).join(', ')}`);
-              console.log(`      Type: ${conv.type}`);
-              console.log(`      Last message date: ${conv.lastMessageDate}`);
-              console.log(`      Last internal comment: ${conv.lastInternalComment || 'NOT FOUND'}`);
-              console.log(`      Note: ${conv.note || 'NOT FOUND'}`);
-              console.log(`      Internal comment: ${conv.internalComment || 'NOT FOUND'}`);
-              console.log(`      Comment: ${conv.comment || 'NOT FOUND'}`);
-            }
-            
-            // Try different possible field names for internal comments
-            const internalComment = conv.lastInternalComment || conv.note || conv.internalComment || conv.comment;
-            
-            if (internalComment) {
+            // Check if the last message was an internal comment
+            if (conv.isLastMessageInternalComment === true && conv.lastMessageBody) {
+              const commentText = conv.lastMessageBody;
+              
               if (!latestComment || new Date(conv.lastMessageDate) > new Date(latestComment.date)) {
                 latestComment = {
-                  text: internalComment,
+                  text: commentText,
                   date: conv.lastMessageDate,
                   conversationId: conv.id
                 };
-                if (this.debug) {
-                  console.log(`      ✅ Found comment: "${internalComment.substring(0, 50)}..."`);
-                }
               }
             }
           }
@@ -409,9 +389,6 @@ class PollingService {
             
             // Skip @reply internal notes
             if (cleanMessage.toLowerCase().startsWith('@reply')) {
-              if (this.debug) {
-                console.log(`      ⏭️ Skipping @reply comment`);
-              }
               continue;
             }
             
@@ -442,12 +419,8 @@ class PollingService {
                   );
                   newReplies++;
                 }
-              } else if (this.debug) {
-                console.log(`   ⏭️ Already processed comment from ${contact.phone_number}`);
               }
             }
-          } else if (this.debug) {
-            console.log(`   📭 No internal comments found for ${contact.phone_number}`);
           }
 
           await this.delay(this.delayBetweenContacts);
@@ -476,8 +449,6 @@ class PollingService {
 
       if (newReplies > 0) {
         console.log(`📊 Poll complete: ${newReplies} replies sent (${Math.round(duration/1000)}s)\n`);
-      } else if (this.debug) {
-        console.log(`📊 Poll complete: no new replies (${Math.round(duration/1000)}s)\n`);
       }
       
       await this.delay(this.delayBetweenPolls);
@@ -570,13 +541,13 @@ class PollingService {
         }
       }
       
-      if (activeCount > 0) {
+      if (activeCount > 0 && this.debug) {
         const finalCount = await this.tracker.getCount();
         console.log(`📋 Synced ${activeCount} active contacts (${finalCount} total tracked)\n`);
       }
       
     } catch (error) {
-      console.error(`❌ Sync error: ${error.message}`);
+      if (this.debug) console.error(`❌ Sync error: ${error.message}`);
     }
   }
 
@@ -615,13 +586,13 @@ class PollingService {
         }
       }
       
-      if (totalAdded > 0) {
+      if (totalAdded > 0 && this.debug) {
         const finalCount = await this.tracker.getCount();
         console.log(`📋 Synced ${totalAdded} contacts (${finalCount} total tracked)\n`);
       }
       
     } catch (error) {
-      console.error(`❌ Sync error: ${error.message}`);
+      if (this.debug) console.error(`❌ Sync error: ${error.message}`);
     }
   }
 
