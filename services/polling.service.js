@@ -12,11 +12,10 @@ class PollingService {
     this.locationId = options.locationId || process.env.GHL_LOCATION_ID;
     
     // Provider from environment variable (NO COMMANDS - just use this provider)
-    // IMESSAGEORSMS=true -> use bluebubbles, false -> use tallbob
     const useIMessage = process.env.IMESSAGEORSMS === 'true';
     this.defaultProvider = useIMessage ? 'bluebubbles' : 'tallbob';
     
-    // Provider commands mapping - KEPT FOR COMPATIBILITY but will be overridden by env
+    // Provider commands mapping - KEPT but will be overridden
     this.providerCommands = {
       '@tb': 'tallbob',
       '@tallbob': 'tallbob',
@@ -237,6 +236,7 @@ class PollingService {
     if (!connectionTest.success) {
       console.error(`\n❌ GHL CONNECTION FAILED!`);
       console.error(`   Error: ${connectionTest.error}`);
+      console.error(`   ${connectionTest.suggestion || 'Please check your configuration'}`);
       console.error(`\n   Make sure:`);
       console.error(`   1. GHL_PRIVATE_INTEGRATION_TOKEN is set correctly in .env`);
       console.error(`   2. GHL_LOCATION_ID=${this.locationId} matches the token's location`);
@@ -429,7 +429,6 @@ class PollingService {
       
       let result;
       
-      // Send the actual message via provider (NO GHL LOGGING)
       if (provider === 'bluebubbles') {
         if (!this.bluebubblesService) {
           console.error(`   ❌ BlueBubbles service not configured`);
@@ -510,14 +509,10 @@ class PollingService {
   
   async sendViaTallBob(contact, replyText, imageUrl) {
     // This method is kept for compatibility but not used directly
-    // sendReplyWithProvider handles Tall Bob directly
     try {
       let result;
       
       if (imageUrl) {
-        this.trackApiCall('sendMMS', 'sendMMS');
-        console.log(`   📸 Sending MMS via Tall Bob to ${contact.phone_number}`);
-        
         result = await this.tallbobService.sendMMS({
           to: contact.phone_number,
           from: process.env.TALLBOB_NUMBER || '+61428616133',
@@ -525,22 +520,15 @@ class PollingService {
           mediaUrl: imageUrl,
           reference: `mms_${contact.contact_id}_${Date.now()}`
         });
-        
-        console.log(`   ✅ MMS sent! ID: ${result.messageId}`);
         this.stats.totalMmsSent++;
         this.stats.totalSmsSent++;
       } else {
-        this.trackApiCall('sendSMS', 'sendSMS');
-        console.log(`   💬 Sending SMS via Tall Bob to ${contact.phone_number}`);
-        
         result = await this.tallbobService.sendSMS({
           to: contact.phone_number,
           from: process.env.TALLBOB_NUMBER || '+61428616133',
           message: replyText,
           reference: `sms_${contact.contact_id}_${Date.now()}`
         });
-        
-        console.log(`   ✅ SMS sent! ID: ${result.messageId}`);
         this.stats.totalSmsSent++;
       }
       
@@ -877,7 +865,9 @@ class PollingService {
         
         this.trackApiCall('searchContacts', 'searchContacts');
         
-        const response = await this.ghlService.client.contacts.searchContactsAdvanced({
+        // WORKING: Use getClient() method
+        const client = await this.ghlService.getClient(this.locationId);
+        const response = await client.contacts.searchContactsAdvanced({
           locationId: this.locationId,
           pageLimit: this.syncBatchSize,
           page: page
@@ -1055,7 +1045,9 @@ class PollingService {
         
         this.trackApiCall('searchContacts', 'searchContacts');
         
-        const response = await this.ghlService.client.contacts.searchContactsAdvanced({
+        // WORKING: Use getClient() method
+        const client = await this.ghlService.getClient(this.locationId);
+        const response = await client.contacts.searchContactsAdvanced({
           locationId: this.locationId,
           pageLimit: this.syncBatchSize,
           page: page
