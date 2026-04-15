@@ -86,6 +86,13 @@ export default (app, tallbobService, ghlService, bluebubblesService) => {
     let eventId;
     if (provider === 'BLUEBUBBLES') {
       const blueData = messageData.data || messageData;
+      
+      // CRITICAL FIX: Skip messages that were sent FROM your system (outgoing)
+      if (blueData.isFromMe === true) {
+        // This is a message we sent, don't process it
+        return;
+      }
+      
       eventId = blueData.guid || messageData.guid || blueData.messageGuid || 
                 `${blueData.handle?.address}_${blueData.dateCreated}`;
     } else {
@@ -224,13 +231,13 @@ export default (app, tallbobService, ghlService, bluebubblesService) => {
       await markEventProcessed(uniqueEventId);
 
     } catch (error) {
-      // COMPLETELY SILENT - no error logs for incoming messages
+      // Silent
     } finally {
       await unlockEvent(uniqueEventId);
     }
   }
 
-  // ==================== INCOMING WEBHOOKS (COMPLETELY SILENT) ====================
+  // ==================== INCOMING WEBHOOKS ====================
 
   app.post('/tallbob/incoming/sms', async (req, res) => {
     try {
@@ -263,7 +270,7 @@ export default (app, tallbobService, ghlService, bluebubblesService) => {
     }
   });
 
-  // ==================== OUTGOING MESSAGES (THESE WILL SHOW) ====================
+  // ==================== OUTGOING MESSAGES ====================
 
   app.post('/tallbob/send-message', async (req, res) => {
     try {
@@ -281,7 +288,6 @@ export default (app, tallbobService, ghlService, bluebubblesService) => {
         result = await tallbobService.sendSMS({ to, from, message, reference: `ghl_${Date.now()}` });
       }
 
-      // Silent GHL logging - no console output
       if (contactId || conversationId) {
         try {
           const targetLocationId = locationId || ghlService.locationId;
@@ -340,7 +346,6 @@ export default (app, tallbobService, ghlService, bluebubblesService) => {
         result = await bluebubblesService.sendMessage({ to, from, message, effectId });
       }
 
-      // Silent GHL logging - no console output
       if (contactId || conversationId) {
         try {
           const targetLocationId = locationId || ghlService.locationId;
