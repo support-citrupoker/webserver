@@ -34,6 +34,18 @@ class GHLService {
     console.log(`📍 Default locationId: ${this.locationId ? 'Set' : 'Not set'}`);
   }
 
+  /**
+   * ADD THIS METHOD - Returns the SDK client (for compatibility with polling service)
+   */
+  async getClient(locationId = this.locationId) {
+    // For single location mode, just return the existing client
+    // The locationId parameter is ignored since we're using a single token
+    return this.client;
+  }
+
+  /**
+   * Suppress SDK internal error logging for expected errors
+   */
   _suppressSDKLogging() {
     const originalError = console.error;
     console.error = (...args) => {
@@ -46,15 +58,21 @@ class GHLService {
     };
   }
 
+  /**
+   * Set or update the location ID
+   */
   setLocationId(locationId) {
     this.locationId = locationId;
+    console.log(`📍 Location ID set to: ${locationId}`);
   }
 
   // ==================== CONTACT METHODS ====================
 
   async searchContactsByPhone(phoneNumber, locationId = this.locationId) {
     try {
-      if (!locationId) throw new Error('locationId required');
+      if (!locationId) {
+        throw new Error('locationId is required');
+      }
 
       const isEmail = phoneNumber.includes('@');
       const cleanIdentifier = isEmail ? phoneNumber.toLowerCase().trim() : phoneNumber.replace(/\D/g, '');
