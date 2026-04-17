@@ -1,5 +1,6 @@
 // routes/index.js
 import { join } from 'path';
+import crypto from 'crypto';
 
 const processedEvents = new Set();
 const processedExpiry = new Map();
@@ -73,7 +74,246 @@ async function unlockEvent(eventId) {
   processingLock.delete(eventId);
 }
 
+// Webhook processor for internal comments
+let webhookProcessingQueue = [];
+let isProcessingWebhookQueue = false;
+
+async function processWebhookQueue() {
+  if (isProcessingWebhookQueue) return;
+  if (webhookProcessingQueue.length === 0) return;
+  
+  isProcessingWebhookQueue = true;
+  
+  while (webhookProcessingQueue.length > 0) {
+    const payload = webhookProcessingQueue.shift();
+    try {
+      await processInternalCommentWebhook(payload);
+    } catch (error) {
+      console.error('❌ Error processing queued webhook:', error.message);
+    }
+    await delay(500);
+  }
+  
+  isProcessingWebhookQueue = false;
+}
+
+async function processInternalCommentWebhook(payload) {
+  const startTime = Date.now();
+  
+  try {
+    console.log(`\n${'='.repeat(60)}`);
+    console.log(`💬 INTERNAL COMMENT WEBHOOK RECEIVED`);
+    console.log(`   🕐 Time: ${new Date().toLocaleString()}`);
+    console.log(`   📍 Location: ${payload.locationId}`);
+    console.log(`   💬 Message: "${payload.message?.substring(0, 100)}${payload.message?.length > 100 ? '...' : ''}"`);
+    console.log(`   📞 Phone: ${payload.phone}`);
+    console.log(`   🆔 Message ID: ${payload.messageId}`);
+    console.log(`   🆔 Conversation ID: ${payload.conversationId}`);
+    console.log(`   🆔 Contact ID: ${payload.contactId}`);
+    console.log(`   📝 Type: ${payload.type}`);
+    console.log(`${'='.repeat(60)}`);
+    
+    if (!payload.message || payload.message.trim() === '') {
+      console.log(`⏭️ Empty message, skipping`);
+      return { success: true, message: 'Empty message', skipped: true };
+    }
+    
+    if (payload.message.trim().toLowerCase().startsWith('@reply')) {
+      console.log(`⏭️ Internal note (@reply), skipping`);
+      return { success: true, message: 'Internal note', skipped: true };
+    }
+    
+    const useIMessage = process.env.IMESSAGEORSMS === 'true';
+    const provider = useIMessage ? 'bluebubbles' : 'tallbob';
+    
+    const imageUrl = extractImageUrl(payload.message);
+    const cleanMessage = imageUrl ? payload.message.replace(imageUrl, '').trim() : payload.message.trim();
+    
+    console.log(`   📤 Sending reply via ${provider.toUpperCase()}`);
+    
+    const sendResult = await sendReplyViaProvider(
+      payload.contactId,
+      payload.phone,
+      cleanMessage,
+      imageUrl,
+      payload.locationId,
+      payload.conversationId,
+      provider
+    );
+    
+    const duration = Date.now() - startTime;
+    
+    if (sendResult.success) {
+      console.log(`\n✅ Webhook processed successfully in ${duration}ms`);
+      console.log(`   📤 Reply sent via ${sendResult.provider.toUpperCase()}`);
+      console.log(`   🆔 Message ID: ${sendResult.messageId}`);
+    } else {
+      console.log(`\n❌ Webhook processing failed in ${duration}ms`);
+      console.log(`   Error: ${sendResult.error}`);
+    }
+    
+    return sendResult;
+    
+  } catch (error) {
+    console.error(`❌ Webhook handler error:`, error.message);
+    return { success: false, error: error.message };
+  }
+}
+
+function extractImageUrl(text) {
+  if (!text) return null;
+  const urlRegex = /(https?:\/\/[^\s]+)/g;
+  const urls = text.match(urlRegex) || [];
+  for (const url of urls) {
+    const lowerUrl = url.toLowerCase();
+    if (lowerUrl.includes('.jpg') || lowerUrl.includes('.png') || 
+        lowerUrl.includes('.jpeg') || lowerUrl.includes('.gif') ||
+        lowerUrl.includes('imgur.com')) {
+      return url;
+    }
+  }
+  return null;
+}
+
+async function sendReplyViaProvider(contactId, phoneNumber, messageText, imageUrl, locationId, conversationId, provider) {
+  try {
+    console.log(`\n📤 ===== SENDING ${provider.toUpperCase()} REPLY =====`);
+    console.log(`   📞 To: ${phoneNumber}`);
+    console.log(`   💬 Message: "${messageText.substring(0, 100)}${messageText.length > 100 ? '...' : ''}"`);
+    console.log(`   🖼️ Image: ${imageUrl ? 'Yes' : 'No'}`);
+    
+    let result;
+    
+    if (provider === 'bluebubbles') {
+      if (!global.bluebubblesService) {
+        throw new Error('BlueBubbles service not configured');
+      }
+      
+      const fromAccount = process.env.BLUEBUBBLES_IMESSAGE_ACCOUNT || null;
+      
+      if (imageUrl) {
+        result = await global.bluebubblesService.sendAttachment({
+          to: phoneNumber,
+          from: fromAccount,
+          message: messageText,
+          mediaUrl: imageUrl
+        });
+      } else {
+        result = await global.bluebubblesService.sendMessage({
+          to: phoneNumber,
+          from: fromAccount,
+          message: messageText
+        });
+      }
+      
+      console.log(`   ✅ iMessage sent! GUID: ${result.guid}`);
+      
+      if (conversationId && global.ghlService) {
+        try {
+          await makeAPICall(
+            () => global.ghlService.addMessageToConversation(conversationId, {
+              contactId: contactId,
+              body: messageText,
+              messageType: imageUrl ? 'MMS' : 'SMS',
+              mediaUrls: imageUrl ? [imageUrl] : [],
+              direction: 'outbound',
+              date: new Date().toISOString(),
+              providerMessageId: result.guid,
+              provider: 'BlueBubbles'
+            }, locationId),
+            0,
+            'addMessageToConversation'
+          );
+          console.log(`   📝 Logged to GHL conversation`);
+        } catch (ghlError) {
+          console.log(`   ⚠️ Could not log to GHL: ${ghlError.message}`);
+        }
+      }
+      
+      return { success: true, provider: 'bluebubbles', messageId: result.guid };
+      
+    } else {
+      if (!global.tallbobService) {
+        throw new Error('TallBob service not configured');
+      }
+      
+      if (imageUrl) {
+        result = await global.tallbobService.sendMMS({
+          to: phoneNumber,
+          from: process.env.TALLBOB_NUMBER || '+61428616133',
+          message: messageText,
+          mediaUrl: imageUrl,
+          reference: `webhook_${contactId}_${Date.now()}`
+        });
+        console.log(`   ✅ MMS sent! ID: ${result.messageId}`);
+      } else {
+        result = await global.tallbobService.sendSMS({
+          to: phoneNumber,
+          from: process.env.TALLBOB_NUMBER || '+61428616133',
+          message: messageText,
+          reference: `webhook_${contactId}_${Date.now()}`
+        });
+        console.log(`   ✅ SMS sent! ID: ${result.messageId}`);
+      }
+      
+      if (conversationId && global.ghlService) {
+        try {
+          await makeAPICall(
+            () => global.ghlService.addMessageToConversation(conversationId, {
+              contactId: contactId,
+              body: messageText,
+              messageType: imageUrl ? 'MMS' : 'SMS',
+              mediaUrls: imageUrl ? [imageUrl] : [],
+              direction: 'outbound',
+              date: new Date().toISOString(),
+              providerMessageId: result.messageId,
+              provider: 'Tall Bob'
+            }, locationId),
+            0,
+            'addMessageToConversation'
+          );
+          console.log(`   📝 Logged to GHL conversation`);
+        } catch (ghlError) {
+          console.log(`   ⚠️ Could not log to GHL: ${ghlError.message}`);
+        }
+      }
+      
+      return { success: true, provider: 'tallbob', messageId: result.messageId };
+    }
+    
+  } catch (error) {
+    console.error(`   ❌ Send failed: ${error.message}`);
+    return { success: false, error: error.message };
+  }
+}
+
 export default (app, tallbobService, ghlService, bluebubblesService) => {
+  
+  global.tallbobService = tallbobService;
+  global.ghlService = ghlService;
+  global.bluebubblesService = bluebubblesService;
+
+  app.post('/webhook/ghl/internal-comment', async (req, res) => {
+    try {
+      const payload = req.body;
+      console.log(`📨 Received GHL webhook: ${payload.type || 'internal-comment'} from ${payload.phone || 'unknown'}`);
+      res.status(200).json({ received: true, timestamp: new Date().toISOString(), messageId: payload.messageId });
+      webhookProcessingQueue.push(payload);
+      processWebhookQueue().catch(console.error);
+    } catch (error) {
+      console.error('❌ Error in GHL webhook:', error.message);
+      res.status(200).json({ received: true, error: error.message });
+    }
+  });
+
+  app.get('/webhook/status', (req, res) => {
+    res.json({
+      status: 'healthy',
+      queueSize: webhookProcessingQueue.length,
+      isProcessing: isProcessingWebhookQueue,
+      timestamp: new Date().toISOString()
+    });
+  });
 
   async function processIncomingMessage(messageData, provider = 'SMS') {
     if (provider === 'SMS' || provider === 'MMS') {
@@ -86,13 +326,9 @@ export default (app, tallbobService, ghlService, bluebubblesService) => {
     let eventId;
     if (provider === 'BLUEBUBBLES') {
       const blueData = messageData.data || messageData;
-      
-      // CRITICAL FIX: Skip messages that were sent FROM your system (outgoing)
       if (blueData.isFromMe === true) {
-        // This is a message we sent, don't process it
         return;
       }
-      
       eventId = blueData.guid || messageData.guid || blueData.messageGuid || 
                 `${blueData.handle?.address}_${blueData.dateCreated}`;
     } else {
@@ -237,8 +473,6 @@ export default (app, tallbobService, ghlService, bluebubblesService) => {
     }
   }
 
-  // ==================== INCOMING WEBHOOKS ====================
-
   app.post('/tallbob/incoming/sms', async (req, res) => {
     try {
       res.status(200).json({ received: true });
@@ -271,11 +505,11 @@ export default (app, tallbobService, ghlService, bluebubblesService) => {
   });
 
   // ==================== OUTGOING MESSAGES ====================
+  // THESE ARE THE ONLY ENDPOINTS THAT WERE MODIFIED
+  // They now match the same logic that worked in your polling service
 
   app.post('/tallbob/send-message', async (req, res) => {
     try {
-      console.log(req.body)
-      console.log('Tallbob')
       const { to, from, message, mediaUrl, contactId, locationId, conversationId } = req.body;
       console.log(`\n📤 Sending SMS to ${to}`);
 
@@ -290,6 +524,7 @@ export default (app, tallbobService, ghlService, bluebubblesService) => {
         result = await tallbobService.sendSMS({ to, from, message, reference: `ghl_${Date.now()}` });
       }
 
+      // Log to GHL - SAME LOGIC AS POLLING SERVICE
       if (contactId || conversationId) {
         try {
           const targetLocationId = locationId || ghlService.locationId;
@@ -309,17 +544,23 @@ export default (app, tallbobService, ghlService, bluebubblesService) => {
           if (conversation) {
             await makeAPICall(
               () => ghlService.addMessageToConversation(conversation.id, {
-                contactId, body: message, messageType: mediaUrl ? 'MMS' : 'SMS',
-                mediaUrls: mediaUrl ? [mediaUrl] : [], direction: 'outbound',
-                date: new Date().toISOString(), providerMessageId: result.messageId,
-                fromNumber: from, toNumber: to, provider: 'Tall Bob'
+                contactId: contactId,
+                body: message,
+                messageType: mediaUrl ? 'MMS' : 'SMS',
+                mediaUrls: mediaUrl ? [mediaUrl] : [],
+                direction: 'outbound',
+                date: new Date().toISOString(),
+                providerMessageId: result.messageId,
+                fromNumber: from,
+                toNumber: to,
+                provider: 'Tall Bob'
               }, targetLocationId),
               0,
               'addMessageToConversation'
             );
           }
         } catch (ghlError) {
-          // Silent fail
+          // Silent fail - don't log to avoid noise
         }
       }
 
@@ -334,10 +575,6 @@ export default (app, tallbobService, ghlService, bluebubblesService) => {
 
   app.post('/bluebubbles/send-message', async (req, res) => {
     try {
-
-      console.log(req.body)
-      console.log('Bluebubbles')
-      
       const { to, from, message, mediaUrl, contactId, locationId, conversationId, effectId } = req.body;
       console.log(`\n📱 Sending iMessage to ${to}`);
 
@@ -352,6 +589,7 @@ export default (app, tallbobService, ghlService, bluebubblesService) => {
         result = await bluebubblesService.sendMessage({ to, from, message, effectId });
       }
 
+      // Log to GHL - SAME LOGIC AS POLLING SERVICE
       if (contactId || conversationId) {
         try {
           const targetLocationId = locationId || ghlService.locationId;
@@ -371,17 +609,23 @@ export default (app, tallbobService, ghlService, bluebubblesService) => {
           if (conversation) {
             await makeAPICall(
               () => ghlService.addMessageToConversation(conversation.id, {
-                contactId, body: message, messageType: mediaUrl ? 'MMS' : 'SMS',
-                mediaUrls: mediaUrl ? [mediaUrl] : [], direction: 'outbound',
-                date: new Date().toISOString(), providerMessageId: result.guid,
-                fromNumber: from, toNumber: to, provider: 'BlueBubbles'
+                contactId: contactId,
+                body: message,
+                messageType: mediaUrl ? 'MMS' : 'SMS',
+                mediaUrls: mediaUrl ? [mediaUrl] : [],
+                direction: 'outbound',
+                date: new Date().toISOString(),
+                providerMessageId: result.guid,
+                fromNumber: from,
+                toNumber: to,
+                provider: 'BlueBubbles'
               }, targetLocationId),
               0,
               'addMessageToConversation'
             );
           }
         } catch (ghlError) {
-          // Silent fail
+          // Silent fail - don't log to avoid noise
         }
       }
 
