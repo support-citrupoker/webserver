@@ -1111,7 +1111,7 @@ class PollingService {
           total: this.stats.totalSmsSent + this.stats.totaliMessageSent
         },
         syncSettings: {
-          activeOnly: this.syncOnlyActive,
+           activeOnly: this.syncOnlyActive,
           activeDaysThreshold: this.activeDaysThreshold
         },
         providerCommands: Object.keys(this.providerCommands)
@@ -1125,4 +1125,4 @@ class PollingService {
   }
 }
 
-export default PollingService;
+export default PollingService; 

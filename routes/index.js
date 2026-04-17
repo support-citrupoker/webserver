@@ -274,6 +274,7 @@ export default (app, tallbobService, ghlService, bluebubblesService) => {
 
   app.post('/tallbob/send-message', async (req, res) => {
     try {
+      console.log(req.body)
       const { to, from, message, mediaUrl, contactId, locationId, conversationId } = req.body;
       console.log(`\n📤 Sending SMS to ${to}`);
 
@@ -332,6 +333,8 @@ export default (app, tallbobService, ghlService, bluebubblesService) => {
 
   app.post('/bluebubbles/send-message', async (req, res) => {
     try {
+
+      console.log(req.body)
       const { to, from, message, mediaUrl, contactId, locationId, conversationId, effectId } = req.body;
       console.log(`\n📱 Sending iMessage to ${to}`);
 
