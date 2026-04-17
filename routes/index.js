@@ -337,6 +337,7 @@ export default (app, tallbobService, ghlService, bluebubblesService) => {
 
       console.log(req.body)
       console.log('Bluebubbles')
+      
       const { to, from, message, mediaUrl, contactId, locationId, conversationId, effectId } = req.body;
       console.log(`\n📱 Sending iMessage to ${to}`);
 
