@@ -505,8 +505,7 @@ export default (app, tallbobService, ghlService, bluebubblesService) => {
   });
 
   // ==================== OUTGOING MESSAGES ====================
-  // THESE ARE THE ONLY ENDPOINTS THAT WERE MODIFIED
-  // They now match the same logic that worked in your polling service
+  // UPDATED to match polling service logic
 
   app.post('/tallbob/send-message', async (req, res) => {
     try {
@@ -524,7 +523,6 @@ export default (app, tallbobService, ghlService, bluebubblesService) => {
         result = await tallbobService.sendSMS({ to, from, message, reference: `ghl_${Date.now()}` });
       }
 
-      // Log to GHL - SAME LOGIC AS POLLING SERVICE
       if (contactId || conversationId) {
         try {
           const targetLocationId = locationId || ghlService.locationId;
@@ -544,23 +542,17 @@ export default (app, tallbobService, ghlService, bluebubblesService) => {
           if (conversation) {
             await makeAPICall(
               () => ghlService.addMessageToConversation(conversation.id, {
-                contactId: contactId,
-                body: message,
-                messageType: mediaUrl ? 'MMS' : 'SMS',
-                mediaUrls: mediaUrl ? [mediaUrl] : [],
-                direction: 'outbound',
-                date: new Date().toISOString(),
-                providerMessageId: result.messageId,
-                fromNumber: from,
-                toNumber: to,
-                provider: 'Tall Bob'
+                contactId, body: message, messageType: mediaUrl ? 'MMS' : 'SMS',
+                mediaUrls: mediaUrl ? [mediaUrl] : [], direction: 'outbound',
+                date: new Date().toISOString(), providerMessageId: result.messageId,
+                fromNumber: from, toNumber: to, provider: 'Tall Bob'
               }, targetLocationId),
               0,
               'addMessageToConversation'
             );
           }
         } catch (ghlError) {
-          // Silent fail - don't log to avoid noise
+          // Silent fail
         }
       }
 
@@ -573,6 +565,7 @@ export default (app, tallbobService, ghlService, bluebubblesService) => {
     }
   });
 
+  // UPDATED: BlueBubbles send-message endpoint matching polling service logic
   app.post('/bluebubbles/send-message', async (req, res) => {
     try {
       const { to, from, message, mediaUrl, contactId, locationId, conversationId, effectId } = req.body;
@@ -583,13 +576,30 @@ export default (app, tallbobService, ghlService, bluebubblesService) => {
       }
 
       let result;
+      
+      // Use fromAccount from env if not provided, matching polling service
+      const fromAccount = from || process.env.BLUEBUBBLES_IMESSAGE_ACCOUNT || null;
+      
       if (mediaUrl) {
-        result = await bluebubblesService.sendAttachment({ to, from, message, mediaUrl, effectId });
+        // Send attachment (MMS-like) - matches polling service sendAttachment call
+        result = await bluebubblesService.sendAttachment({ 
+          to, 
+          from: fromAccount, 
+          message, 
+          mediaUrl, 
+          effectId 
+        });
       } else {
-        result = await bluebubblesService.sendMessage({ to, from, message, effectId });
+        // Send text message - matches polling service sendMessage call
+        result = await bluebubblesService.sendMessage({ 
+          to, 
+          from: fromAccount, 
+          message, 
+          effectId 
+        });
       }
 
-      // Log to GHL - SAME LOGIC AS POLLING SERVICE
+      // Log to GHL - matches polling service pattern
       if (contactId || conversationId) {
         try {
           const targetLocationId = locationId || ghlService.locationId;
@@ -616,7 +626,7 @@ export default (app, tallbobService, ghlService, bluebubblesService) => {
                 direction: 'outbound',
                 date: new Date().toISOString(),
                 providerMessageId: result.guid,
-                fromNumber: from,
+                fromNumber: fromAccount,
                 toNumber: to,
                 provider: 'BlueBubbles'
               }, targetLocationId),
@@ -625,7 +635,7 @@ export default (app, tallbobService, ghlService, bluebubblesService) => {
             );
           }
         } catch (ghlError) {
-          // Silent fail - don't log to avoid noise
+          // Silent fail - matches polling service pattern
         }
       }
 
