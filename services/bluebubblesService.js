@@ -1,6 +1,9 @@
 // services/bluebubbles.service.js
 import axios from 'axios';
 import { randomUUID } from 'crypto';
+import FormData from 'form-data';
+import fs from 'fs';
+import path from 'path';
 
 class BlueBubblesService {
   constructor() {
@@ -47,7 +50,6 @@ class BlueBubblesService {
       const chatGuid = to.includes('@') ? to : this.formatPhoneNumber(to);
       const tempGuid = this.generateTempGuid();
       
-      // Build URL without double slashes
       const endpoint = '/api/v1/message/text';
       const fullUrl = `${this.serverUrl}${endpoint}`;
       const urlWithPassword = `${fullUrl}?password=${this.password}`;
@@ -92,6 +94,7 @@ class BlueBubblesService {
     }
   }
 
+  // FIXED: Download image from URL and send as multipart attachment
   async sendAttachment({ to, message, attachmentUrl, effectId = null }) {
     try {
       console.log(`\n📱 ===== BLUEBUBBLES SEND ATTACHMENT DEBUG =====`);
@@ -112,18 +115,45 @@ class BlueBubblesService {
       console.log(`   Endpoint: ${endpoint}`);
       console.log(`   Full URL: ${fullUrl}`);
       
-      const payload = {
-        chatGuid: chatGuid,
-        tempGuid: tempGuid,
-        message: message || '📸 Image',
-        attachmentUrls: [attachmentUrl], // BlueBubbles expects array of URLs
-        effectId: effectId
-      };
+      // First, download the image from the URL
+      console.log(`   📥 Downloading image from URL...`);
+      const imageResponse = await axios.get(attachmentUrl, {
+        responseType: 'arraybuffer',
+        timeout: 30000
+      });
       
-      const response = await this.client.post(urlWithPassword, payload, {
+      // Get file extension from URL or content-type
+      let fileExtension = 'png';
+      const contentType = imageResponse.headers['content-type'];
+      if (contentType) {
+        if (contentType.includes('jpeg') || contentType.includes('jpg')) fileExtension = 'jpg';
+        else if (contentType.includes('png')) fileExtension = 'png';
+        else if (contentType.includes('gif')) fileExtension = 'gif';
+        else if (contentType.includes('webp')) fileExtension = 'webp';
+      }
+      
+      const fileName = `attachment_${Date.now()}.${fileExtension}`;
+      console.log(`   📁 File name: ${fileName}`);
+      
+      // Create form data
+      const formData = new FormData();
+      formData.append('chatGuid', chatGuid);
+      formData.append('tempGuid', tempGuid);
+      formData.append('message', message || '📸 Image');
+      if (effectId) formData.append('effectId', effectId);
+      
+      // Append the downloaded image as buffer
+      formData.append('attachment', Buffer.from(imageResponse.data), {
+        filename: fileName,
+        contentType: contentType || 'image/png'
+      });
+      
+      const response = await this.client.post(urlWithPassword, formData, {
         headers: {
-          'Content-Type': 'application/json'
-        }
+          ...formData.getHeaders()
+        },
+        maxBodyLength: Infinity,
+        maxContentLength: Infinity
       });
       
       console.log(`\n📥 RESPONSE: Status ${response.status}`);
