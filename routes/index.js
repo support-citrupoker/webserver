@@ -190,20 +190,20 @@ async function sendReplyViaProvider(contactId, phoneNumber, messageText, imageUr
         throw new Error('BlueBubbles service not configured');
       }
       
-      const fromAccount = process.env.BLUEBUBBLES_IMESSAGE_ACCOUNT || null;
-      
+      // BlueBubbles only needs 'to' and 'message' - 'from' is not used
       if (imageUrl) {
-        result = await global.bluebubblesService.sendAttachment({
+        // For attachments, we need to handle differently
+        // Since your service doesn't have sendAttachment, we'll include URL in message
+        result = await global.bluebubblesService.sendMessage({
           to: phoneNumber,
-          from: fromAccount,
-          message: messageText,
-          mediaUrl: imageUrl
+          message: `${messageText} ${imageUrl}`,
+          effectId: null
         });
       } else {
         result = await global.bluebubblesService.sendMessage({
           to: phoneNumber,
-          from: fromAccount,
-          message: messageText
+          message: messageText,
+          effectId: null
         });
       }
       
@@ -507,7 +507,7 @@ export default (app, tallbobService, ghlService, bluebubblesService) => {
 
   // ==================== OUTGOING MESSAGES ====================
 
-  // TALL BOB SEND MESSAGE - WITH GHL WEBHOOK SUPPORT
+  // TALL BOB SEND MESSAGE
   app.post('/tallbob/send-message', async (req, res) => {
     try {
       console.log(`\n${'='.repeat(60)}`);
@@ -649,7 +649,7 @@ export default (app, tallbobService, ghlService, bluebubblesService) => {
     }
   });
 
-  // BLUEBUBBLES SEND MESSAGE - WITH GHL WEBHOOK SUPPORT
+  // BLUEBUBBLES SEND MESSAGE - FIXED FOR YOUR SERVICE
   app.post('/bluebubbles/send-message', async (req, res) => {
     try {
       console.log(`\n${'='.repeat(60)}`);
@@ -664,11 +664,6 @@ export default (app, tallbobService, ghlService, bluebubblesService) => {
       if (!to && req.body.phone) {
         to = req.body.phone;
         console.log(`   🔄 Using 'phone' field as 'to': ${to}`);
-      }
-      
-      if (!from) {
-        from = process.env.BLUEBUBBLES_IMESSAGE_ACCOUNT || process.env.TALLBOB_NUMBER || '+61428616133';
-        console.log(`   🔄 Using default 'from': ${from}`);
       }
       
       if (!message && req.body.message) {
@@ -693,7 +688,6 @@ export default (app, tallbobService, ghlService, bluebubblesService) => {
       
       console.log(`\n📋 Extracted fields after mapping:`);
       console.log(`   📞 To: ${to}`);
-      console.log(`   📞 From: ${from}`);
       console.log(`   💬 Message: "${message?.substring(0, 100)}${message?.length > 100 ? '...' : ''}"`);
       console.log(`   🖼️ Media URL: ${mediaUrl || 'None'}`);
       console.log(`   🆔 Contact ID: ${contactId || 'Not provided'}`);
@@ -701,45 +695,42 @@ export default (app, tallbobService, ghlService, bluebubblesService) => {
       console.log(`   📍 Location ID: ${locationId || 'Using default'}`);
       console.log(`   ✨ Effect ID: ${effectId || 'None'}`);
 
-      if (!to || !from || !message) {
+      if (!to || !message) {
         console.log(`\n❌ Missing required fields after mapping:`);
         if (!to) console.log(`   - to is missing`);
-        if (!from) console.log(`   - from is missing`);
         if (!message) console.log(`   - message is missing`);
         return res.status(400).json({ 
           success: false, 
-          error: 'Missing required fields: to, from, and message are required',
-          received: { to, from, message }
+          error: 'Missing required fields: to and message are required',
+          received: { to, message }
         });
       }
 
-      // Use fromAccount from env if not provided
-      const fromAccount = from || process.env.BLUEBUBBLES_IMESSAGE_ACCOUNT || null;
-      console.log(`\n📱 Using from account: ${fromAccount || 'default'}`);
+      // Clean the phone number
+      const cleanTo = to.replace(/[^\d+]/g, '');
+      console.log(`\n📱 Cleaned phone number: ${cleanTo}`);
 
       console.log(`\n📤 Attempting to send via BlueBubbles...`);
-      let result;
       
+      // BlueBubbles service only needs 'to' and 'message'
+      let result;
       if (mediaUrl) {
-        console.log(`   📸 Sending as attachment with media URL: ${mediaUrl}`);
-        result = await bluebubblesService.sendAttachment({ 
-          to, 
-          from: fromAccount, 
-          message, 
-          mediaUrl, 
-          effectId 
+        console.log(`   📸 Sending as attachment (including URL in message)`);
+        result = await bluebubblesService.sendMessage({
+          to: cleanTo,
+          message: `${message} ${mediaUrl}`,
+          effectId: effectId || null
         });
-        console.log(`   ✅ Attachment send response:`, JSON.stringify(result, null, 2));
       } else {
         console.log(`   💬 Sending as text message`);
-        result = await bluebubblesService.sendMessage({ 
-          to, 
-          from: fromAccount, 
-          message, 
-          effectId 
+        result = await bluebubblesService.sendMessage({
+          to: cleanTo,
+          message: message,
+          effectId: effectId || null
         });
-        console.log(`   ✅ Message send response:`, JSON.stringify(result, null, 2));
       }
+      
+      console.log(`   ✅ Send response:`, JSON.stringify(result, null, 2));
 
       // Log to GHL
       if (contactId || conversationId) {
@@ -772,8 +763,8 @@ export default (app, tallbobService, ghlService, bluebubblesService) => {
                 direction: 'outbound',
                 date: new Date().toISOString(),
                 providerMessageId: result.guid,
-                fromNumber: fromAccount,
-                toNumber: to,
+                fromNumber: process.env.BLUEBUBBLES_IMESSAGE_ACCOUNT || 'iMessage',
+                toNumber: cleanTo,
                 provider: 'BlueBubbles'
               }, targetLocationId),
               0,
