@@ -14,6 +14,9 @@ const processingLock = new Set();
 const sentMessages = new Set();
 const sentMessagesExpiry = new Map();
 
+// Track pending deliveries for BlueBubbles
+let pendingDeliveries = new Map();
+
 let lastApiCallTime = 0;
 const MIN_API_DELAY = 2000;
 const MAX_RETRIES = 3;
@@ -65,7 +68,17 @@ setInterval(() => {
       sentMessagesExpiry.delete(id);
     }
   }
-  console.log(`🧹 Cleanup: ${sentMessages.size} sent messages tracked, ${processedEvents.size} processed events tracked`);
+  
+  // Clean up old pending deliveries (older than 2 minutes)
+  for (const [id, pending] of pendingDeliveries.entries()) {
+    if (Date.now() - pending.timestamp > 120000) {
+      console.log(`🧹 Cleaning up stale pending delivery: ${id}`);
+      if (pending.timeout) clearTimeout(pending.timeout);
+      pendingDeliveries.delete(id);
+    }
+  }
+  
+  console.log(`🧹 Cleanup: ${sentMessages.size} sent messages tracked, ${processedEvents.size} processed events tracked, ${pendingDeliveries.size} pending deliveries`);
 }, 300000);
 
 async function isEventProcessed(eventId) {
@@ -373,6 +386,7 @@ export default async (app, tallbobService, ghlService, bluebubblesService) => {
   global.tallbobService = tallbobService;
   global.ghlService = ghlService;
   global.bluebubblesService = bluebubblesService;
+  global.pendingDeliveries = pendingDeliveries;
 
   app.post('/webhook/ghl/internal-comment', async (req, res) => {
     try {
@@ -396,6 +410,7 @@ export default async (app, tallbobService, ghlService, bluebubblesService) => {
       trackedSentMessages: sentMessages.size,
       trackedProcessedEvents: processedEvents.size,
       trackedContacts: trackedCount,
+      pendingDeliveries: pendingDeliveries.size,
       tallbobLocationId: process.env.TALLBOB_GHL_LOCATION_ID,
       bluebubblesLocationId: process.env.BLUEBUBBLES_GHL_LOCATION_ID,
       timestamp: new Date().toISOString()
@@ -449,7 +464,39 @@ export default async (app, tallbobService, ghlService, bluebubblesService) => {
     if (provider === 'BLUEBUBBLES') {
       const blueData = messageData.data || messageData;
       
-      if (blueData.isFromMe === true) {
+      // Check if this is a delivery confirmation for a pending message
+      const isFromMe = blueData.isFromMe === true;
+      const messageGuid = blueData.guid;
+      const fromPhone = blueData.handle?.address;
+      const messageText = blueData.text || blueData.body || '';
+      
+      if (isFromMe && pendingDeliveries) {
+        // Try to find matching pending delivery by phone number and message content
+        for (const [tempId, pending] of pendingDeliveries.entries()) {
+          if (pending.to === fromPhone && pending.message === messageText) {
+            console.log(`   ✅ Delivery confirmed for message: ${tempId}`);
+            clearTimeout(pending.timeout);
+            pending.delivered = true;
+            pending.guid = messageGuid;
+            pending.deliveredAt = new Date().toISOString();
+            if (pending.resolver) {
+              pending.resolver({ 
+                delivered: true, 
+                status: 'delivered',
+                guid: messageGuid,
+                timestamp: new Date().toISOString()
+              });
+            }
+            // Don't delete immediately, keep for status queries
+            setTimeout(() => {
+              pendingDeliveries.delete(tempId);
+            }, 60000);
+            break;
+          }
+        }
+      }
+      
+      if (isFromMe) {
         console.log(`⏭️ Skipping BlueBubbles message - isFromMe flag is true (this is our own message)`);
         return;
       }
@@ -681,11 +728,43 @@ export default async (app, tallbobService, ghlService, bluebubblesService) => {
       }
       
       const blueData = req.body.data || req.body;
+      const messageGuid = blueData.guid;
+      const isFromMe = blueData.isFromMe === true;
+      const fromPhone = blueData.handle?.address;
+      const messageText = blueData.text || blueData.body || '';
+      
       console.log(`📨 BlueBubbles incoming webhook received`);
-      console.log(`   GUID: ${blueData.guid}`);
-      console.log(`   From: ${blueData.handle?.address}`);
-      console.log(`   isFromMe: ${blueData.isFromMe}`);
-      console.log(`   Message: ${blueData.text?.substring(0, 50)}`);
+      console.log(`   GUID: ${messageGuid}`);
+      console.log(`   From: ${fromPhone}`);
+      console.log(`   isFromMe: ${isFromMe}`);
+      console.log(`   Message: ${messageText?.substring(0, 50)}`);
+      
+      // If this is a message we sent (isFromMe = true), confirm delivery
+      if (isFromMe && pendingDeliveries) {
+        // Try to find matching pending delivery by phone number and message content
+        for (const [tempId, pending] of pendingDeliveries.entries()) {
+          if (pending.to === fromPhone && pending.message === messageText) {
+            console.log(`   ✅ Delivery confirmed for message: ${tempId}`);
+            clearTimeout(pending.timeout);
+            pending.delivered = true;
+            pending.guid = messageGuid;
+            pending.deliveredAt = new Date().toISOString();
+            if (pending.resolver) {
+              pending.resolver({ 
+                delivered: true, 
+                status: 'delivered',
+                guid: messageGuid,
+                timestamp: new Date().toISOString()
+              });
+            }
+            // Don't delete immediately, keep for status queries
+            setTimeout(() => {
+              pendingDeliveries.delete(tempId);
+            }, 60000);
+            break;
+          }
+        }
+      }
       
       res.status(200).json({ received: true });
       setImmediate(() => processIncomingMessage(req.body, 'BLUEBUBBLES'));
@@ -696,8 +775,6 @@ export default async (app, tallbobService, ghlService, bluebubblesService) => {
   });
 
   // ==================== OUTGOING MESSAGES ====================
-  // NOTE: These endpoints ONLY send messages - they do NOT log to GHL
-  // Only incoming messages from customers are logged to GHL
 
   app.post('/tallbob/send-message', async (req, res) => {
     try {
@@ -789,6 +866,7 @@ export default async (app, tallbobService, ghlService, bluebubblesService) => {
     }
   });
 
+  // BLUEBUBBLES SEND - Waits for webhook confirmation before returning 200
   app.post('/bluebubbles/send-message', async (req, res) => {
     try {
       console.log(`\n${'='.repeat(60)}`);
@@ -829,37 +907,131 @@ export default async (app, tallbobService, ghlService, bluebubblesService) => {
       const cleanTo = to.replace(/[^\d+]/g, '');
       console.log(`\n📱 Cleaned phone number: ${cleanTo}`);
 
-      console.log(`\n📤 Attempting to send via BlueBubbles...`);
+      // Generate a unique tracking ID for this message
+      const trackingId = `bb_${Date.now()}_${Math.random().toString(36).substring(7)}`;
       
-      let result;
-      if (mediaUrl) {
-        console.log(`   📸 Sending as attachment (including URL in message)`);
-        result = await bluebubblesService.sendMessage({
-          to: cleanTo,
-          message: `${message} ${mediaUrl}`,
-          effectId: effectId || null
-        });
-      } else {
-        console.log(`   💬 Sending as text message`);
-        result = await bluebubblesService.sendMessage({
+      // Track the message immediately to prevent loops
+      await markMessageAsSent(trackingId, 'bluebubbles');
+      console.log(`   ✅ Pre-tracked message with ID: ${trackingId}`);
+      
+      // Create a promise that will resolve when webhook confirms delivery
+      let deliveryResolved = false;
+      let deliveryTimeout;
+      
+      const deliveryPromise = new Promise((resolve, reject) => {
+        // Store resolver in pending deliveries
+        pendingDeliveries.set(trackingId, {
           to: cleanTo,
           message: message,
-          effectId: effectId || null
+          timestamp: Date.now(),
+          delivered: false,
+          resolver: (result) => {
+            deliveryResolved = true;
+            if (result.delivered) {
+              resolve(result);
+            } else {
+              reject(new Error('Delivery failed'));
+            }
+          },
+          timeout: setTimeout(() => {
+            if (!deliveryResolved) {
+              deliveryResolved = true;
+              console.log(`   ⏰ Delivery timeout for ${trackingId}`);
+              reject(new Error('Delivery confirmation timeout after 30 seconds'));
+            }
+          }, 30000) // 30 second timeout
+        });
+      });
+      
+      // Send the message
+      console.log(`\n📤 Sending via BlueBubbles...`);
+      
+      let sendError = null;
+      try {
+        let result;
+        if (mediaUrl) {
+          result = await bluebubblesService.sendMessage({
+            to: cleanTo,
+            message: `${message} ${mediaUrl}`,
+            effectId: effectId || null
+          });
+        } else {
+          result = await bluebubblesService.sendMessage({
+            to: cleanTo,
+            message: message,
+            effectId: effectId || null
+          });
+        }
+        
+        if (!result.success) {
+          sendError = new Error(result.error || 'Failed to send message');
+        } else {
+          console.log(`   ✅ Message sent, waiting for delivery confirmation...`);
+          // Update pending with the real GUID if available
+          const pending = pendingDeliveries.get(trackingId);
+          if (pending && result.guid) {
+            pending.actualGuid = result.guid;
+          }
+        }
+      } catch (err) {
+        sendError = err;
+        console.log(`   ❌ Send failed: ${err.message}`);
+      }
+      
+      // If send failed, clean up and return error
+      if (sendError) {
+        const pending = pendingDeliveries.get(trackingId);
+        if (pending) {
+          clearTimeout(pending.timeout);
+          pendingDeliveries.delete(trackingId);
+        }
+        console.log(`\n❌❌❌ BLUEBUBBLES SEND FAILED ❌❌❌`);
+        console.log(`   Error: ${sendError.message}`);
+        return res.status(500).json({ 
+          success: false, 
+          error: sendError.message,
+          messageId: trackingId
         });
       }
       
-      console.log(`   ✅ Send response:`, JSON.stringify(result, null, 2));
-
-      if (result.guid) {
-        await markMessageAsSent(result.guid, 'bluebubbles');
-        console.log(`   ✅ Tracked message GUID: ${result.guid}`);
+      // Wait for delivery confirmation (via webhook)
+      try {
+        const deliveryResult = await deliveryPromise;
+        
+        console.log(`\n✅✅✅ BLUEBUBBLES MESSAGE DELIVERED ✅✅✅`);
+        console.log(`   🆔 Tracking ID: ${trackingId}`);
+        console.log(`   🆔 Actual GUID: ${deliveryResult.guid || trackingId}`);
+        console.log(`   📅 Delivered at: ${deliveryResult.timestamp}`);
+        console.log(`   ⚠️ NOT logged to GHL - only customer replies are logged\n`);
+        
+        res.json({ 
+          success: true, 
+          messageId: trackingId,
+          actualGuid: deliveryResult.guid,
+          status: 'delivered',
+          deliveredAt: deliveryResult.timestamp
+        });
+        
+      } catch (deliveryError) {
+        console.log(`\n❌❌❌ BLUEBUBBLES DELIVERY FAILED ❌❌❌`);
+        console.log(`   🆔 Tracking ID: ${trackingId}`);
+        console.log(`   Error: ${deliveryError.message}`);
+        
+        // Clean up
+        const pending = pendingDeliveries.get(trackingId);
+        if (pending) {
+          clearTimeout(pending.timeout);
+          pendingDeliveries.delete(trackingId);
+        }
+        
+        res.status(500).json({ 
+          success: false, 
+          error: deliveryError.message,
+          messageId: trackingId,
+          note: 'Message was sent but delivery confirmation not received'
+        });
       }
-
-      console.log(`\n✅✅✅ BLUEBUBBLES MESSAGE SENT SUCCESSFULLY ✅✅✅`);
-      console.log(`   🆔 Message ID: ${result.guid}`);
-      console.log(`   ⚠️ NOT logged to GHL - only customer replies are logged\n`);
-      res.json({ success: true, messageId: result.guid });
-
+      
     } catch (error) {
       console.error(`\n❌❌❌ BLUEBUBBLES SEND FAILED ❌❌❌`);
       console.error(`   Error message: ${error.message}`);
@@ -913,10 +1085,12 @@ export default async (app, tallbobService, ghlService, bluebubblesService) => {
       locksSize: processingLock.size,
       sentMessagesSize: sentMessages.size,
       trackedContacts: trackedCount,
+      pendingDeliveries: pendingDeliveries.size,
       tallbobLocationId: process.env.TALLBOB_GHL_LOCATION_ID,
       bluebubblesLocationId: process.env.BLUEBUBBLES_GHL_LOCATION_ID,
       events: Array.from(processedEvents).slice(-10),
-      sentMessages: Array.from(sentMessages).slice(-10)
+      sentMessages: Array.from(sentMessages).slice(-10),
+      pendingList: Array.from(pendingDeliveries.keys()).slice(-10)
     });
   });
 
@@ -959,13 +1133,19 @@ export default async (app, tallbobService, ghlService, bluebubblesService) => {
       processedExpiry.clear();
       sentMessages.clear();
       sentMessagesExpiry.clear();
+      // Clear pending deliveries as well
+      for (const [id, pending] of pendingDeliveries.entries()) {
+        if (pending.timeout) clearTimeout(pending.timeout);
+      }
+      pendingDeliveries.clear();
       
       res.json({ 
         success: true, 
         message: 'Duplicate detection caches cleared',
         cleared: {
           processedEvents: processedEvents.size,
-          sentMessages: sentMessages.size
+          sentMessages: sentMessages.size,
+          pendingDeliveries: pendingDeliveries.size
         }
       });
     } catch (error) {
