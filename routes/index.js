@@ -438,6 +438,7 @@ export default async (app, tallbobService, ghlService, bluebubblesService) => {
   async function processIncomingMessage(messageData, provider = 'SMS') {
     console.log(`\n🔍 PROCESSING INCOMING MESSAGE from ${provider}`);
     console.log(`   Full payload keys: ${Object.keys(messageData).join(', ')}`);
+    console.log(`   Raw messageData:`, JSON.stringify(messageData, null, 2));
     
     // ========== OUTGOING MESSAGE DETECTION ==========
     
@@ -455,8 +456,9 @@ export default async (app, tallbobService, ghlService, bluebubblesService) => {
     
     const incomingMessageId = messageData.eventID || messageData.id || messageData.sms_id || messageData.messageId;
     if (incomingMessageId) {
-      if (await wasMessageSentByUs(incomingMessageId, 'tallbob') || 
-          await wasMessageSentByUs(incomingMessageId, 'bluebubbles')) {
+      const isTallBobSent = await wasMessageSentByUs(incomingMessageId, 'tallbob');
+      const isBlueBubblesSent = await wasMessageSentByUs(incomingMessageId, 'bluebubbles');
+      if (isTallBobSent || isBlueBubblesSent) {
         console.log(`⏭️ Skipping incoming webhook for message ${incomingMessageId} - was sent by us`);
         return;
       }
@@ -467,6 +469,7 @@ export default async (app, tallbobService, ghlService, bluebubblesService) => {
       return;
     }
     
+    // For Tall Bob, validate event type
     if (provider === 'SMS' || provider === 'MMS') {
       const validEvents = ['message_received', 'message_received_mms'];
       if (!validEvents.includes(messageData.eventType)) {
@@ -478,9 +481,11 @@ export default async (app, tallbobService, ghlService, bluebubblesService) => {
     let eventId;
     let messageIdToCheck;
     let providerName;
+    let customerPhone, providerNumber, messageText, timestamp, media, contactID, campaignID, reference;
     
     if (provider === 'BLUEBUBBLES') {
       const blueData = messageData.data || messageData;
+      console.log(`   BlueData:`, JSON.stringify(blueData, null, 2));
       
       // Skip if this is a message we sent (isFromMe = true)
       if (blueData.isFromMe === true) {
@@ -496,54 +501,7 @@ export default async (app, tallbobService, ghlService, bluebubblesService) => {
         return;
       }
       
-      eventId = blueData.guid || messageData.guid || blueData.messageGuid || 
-                `${blueData.handle?.address}_${blueData.dateCreated}`;
-                
-      console.log(`📱 BlueBubbles customer message received from: ${blueData.handle?.address}, GUID: ${messageIdToCheck}`);
-    } else {
-      messageIdToCheck = messageData.eventID || messageData.id;
-      providerName = 'tallbob';
-      
-      if (messageIdToCheck && await wasMessageSentByUs(messageIdToCheck, providerName)) {
-        console.log(`⏭️ Skipping TallBob message ${messageIdToCheck} - was sent by us (tracked)`);
-        return;
-      }
-      
-      eventId = messageData.eventID || messageData.id || 
-                `${messageData.recipient}_${messageData.timestamp}`;
-                
-      console.log(`📱 TallBob message received from: ${messageData.recipient}, EventID: ${messageIdToCheck}`);
-    }
-    
-    if (!eventId) {
-      eventId = `${provider}_${Date.now()}_${Math.random()}`;
-    }
-    
-    const uniqueEventId = `${provider}_${eventId}`;
-
-    const processed = await isEventProcessed(uniqueEventId);
-    if (processed) {
-      console.log(`⏭️ Event already processed: ${uniqueEventId}`);
-      return;
-    }
-
-    const isLocked = await isEventProcessing(uniqueEventId);
-    if (isLocked) {
-      console.log(`⏭️ Event already being processed: ${uniqueEventId}`);
-      return;
-    }
-
-    const locked = await lockEvent(uniqueEventId);
-    if (!locked) {
-      console.log(`⏭️ Could not lock event: ${uniqueEventId}`);
-      return;
-    }
-
-    let customerPhone, providerNumber, messageText, timestamp, media, contactID, campaignID, reference;
-    
-    if (provider === 'BLUEBUBBLES') {
-      const blueData = messageData.data || messageData;
-      
+      // Extract customer phone
       if (blueData.handle && blueData.handle.address) {
         customerPhone = blueData.handle.address;
       } else if (blueData.sender) {
@@ -552,7 +510,6 @@ export default async (app, tallbobService, ghlService, bluebubblesService) => {
         customerPhone = blueData.from;
       } else {
         console.log(`❌ No phone number found in BlueBubbles message`);
-        await unlockEvent(uniqueEventId);
         return;
       }
       
@@ -574,15 +531,21 @@ export default async (app, tallbobService, ghlService, bluebubblesService) => {
         customerPhone = `+${customerPhone.replace(/\D/g, '')}`;
       }
       
-      console.log(`   📞 Customer phone: ${customerPhone}`);
-      console.log(`   💬 Message: "${messageText?.substring(0, 50)}"`);
+      eventId = blueData.guid || messageData.guid || blueData.messageGuid || 
+                `${customerPhone}_${timestamp}`;
+                
+      console.log(`📱 BlueBubbles customer message received`);
+      console.log(`   From: ${customerPhone}`);
+      console.log(`   Message: "${messageText?.substring(0, 50)}"`);
+      console.log(`   Media: ${media.length > 0 ? media.join(', ') : 'None'}`);
       
     } else {
+      // Tall Bob SMS/MMS
       if (!messageData.recipient || !messageData.sentVia) {
         console.log(`❌ Missing recipient or sentVia in TallBob message`);
-        await unlockEvent(uniqueEventId);
         return;
       }
+      
       customerPhone = `+${messageData.recipient.replace(/\D/g, '')}`;
       providerNumber = `+${messageData.sentVia.replace(/\D/g, '')}`;
       messageText = messageData.messageText;
@@ -591,11 +554,43 @@ export default async (app, tallbobService, ghlService, bluebubblesService) => {
       contactID = messageData.contactID;
       campaignID = messageData.campaignID;
       reference = messageData.reference;
+      eventId = messageData.eventID || messageData.id || `${customerPhone}_${timestamp}`;
       
-      console.log(`   📞 Customer phone: ${customerPhone}`);
-      console.log(`   💬 Message: "${messageText?.substring(0, 50)}"`);
+      console.log(`📱 TallBob customer message received`);
+      console.log(`   From: ${customerPhone}`);
+      console.log(`   Message: "${messageText?.substring(0, 50)}"`);
+      console.log(`   Media: ${media.length > 0 ? media.join(', ') : 'None'}`);
+    }
+    
+    if (!eventId) {
+      eventId = `${provider}_${Date.now()}_${Math.random()}`;
+    }
+    
+    const uniqueEventId = `${provider}_${eventId}`;
+    console.log(`   Unique Event ID: ${uniqueEventId}`);
+
+    // Check if already processed
+    const processed = await isEventProcessed(uniqueEventId);
+    if (processed) {
+      console.log(`⏭️ Event already processed: ${uniqueEventId}`);
+      return;
     }
 
+    // Check if already being processed
+    const isLocked = await isEventProcessing(uniqueEventId);
+    if (isLocked) {
+      console.log(`⏭️ Event already being processed: ${uniqueEventId}`);
+      return;
+    }
+
+    // Lock the event
+    const locked = await lockEvent(uniqueEventId);
+    if (!locked) {
+      console.log(`⏭️ Could not lock event: ${uniqueEventId}`);
+      return;
+    }
+
+    // Get the appropriate location ID based on the provider
     const locationId = getLocationIdForProvider(provider);
     
     if (!locationId) {
@@ -610,15 +605,17 @@ export default async (app, tallbobService, ghlService, bluebubblesService) => {
     try {
       console.log(`📝 Creating/updating contact in GHL (${provider === 'BLUEBUBBLES' ? 'BlueBubbles' : 'Tall Bob'} sub-account)...`);
       console.log(`   Location ID: ${locationId}`);
+      console.log(`   Phone: ${customerPhone}`);
+      console.log(`   Message: ${messageText}`);
       
       const contactData = {
         phone: customerPhone,
-        firstName: messageData.firstName || 'Unknown',
-        lastName: messageData.lastName || 'Contact',
+        firstName: messageData.firstName || 'Customer',
+        lastName: messageData.lastName || `From ${provider === 'BLUEBUBBLES' ? 'iMessage' : 'SMS'}`,
         tags: [`${provider.toLowerCase()}_contact`, provider === 'BLUEBUBBLES' ? 'imessage_received' : `${messageType.toLowerCase()}_received`],
         source: provider === 'BLUEBUBBLES' ? 'BlueBubbles Integration' : 'Tall Bob Integration',
         customFields: [
-          { key: 'last_incoming_message', value: messageText || '' },
+          { key: 'last_incoming_message', value: (messageText || '').substring(0, 255) },
           { key: 'last_message_date', value: receivedDate },
           { key: `${provider.toLowerCase()}_contact_id`, value: contactID || '' },
           { key: `${provider.toLowerCase()}_campaign_id`, value: campaignID || '' }
@@ -628,6 +625,8 @@ export default async (app, tallbobService, ghlService, bluebubblesService) => {
       if (provider === 'BLUEBUBBLES' && customerPhone && customerPhone.includes('@')) {
         contactData.email = customerPhone;
       }
+      
+      console.log(`   Contact Data:`, JSON.stringify(contactData, null, 2));
       
       const { contact } = await makeAPICall(
         () => global.ghlService.upsertContact(contactData, locationId),
@@ -667,6 +666,8 @@ export default async (app, tallbobService, ghlService, bluebubblesService) => {
         provider: provider === 'BLUEBUBBLES' ? 'BlueBubbles' : 'Tall Bob'
       };
       
+      console.log(`   Message Payload:`, JSON.stringify(messagePayload, null, 2));
+      
       await makeAPICall(
         () => global.ghlService.addMessageToConversation(conversation.id, messagePayload, locationId),
         0,
@@ -674,33 +675,45 @@ export default async (app, tallbobService, ghlService, bluebubblesService) => {
       );
 
       await markEventProcessed(uniqueEventId);
-      console.log(`✅ Customer message successfully logged to GHL as INBOUND in ${provider === 'BLUEBUBBLES' ? 'BlueBubbles' : 'Tall Bob'} sub-account`);
+      console.log(`✅✅✅ Customer message successfully logged to GHL as INBOUND in ${provider === 'BLUEBUBBLES' ? 'BlueBubbles' : 'Tall Bob'} sub-account ✅✅✅`);
 
     } catch (error) {
       console.error(`❌ Error processing incoming message:`, error.message);
+      console.error(`   Stack:`, error.stack);
+      if (error.response) {
+        console.error(`   Response status: ${error.response.status}`);
+        console.error(`   Response data:`, error.response.data);
+      }
     } finally {
       await unlockEvent(uniqueEventId);
     }
   }
 
   app.post('/tallbob/incoming/sms', async (req, res) => {
+    console.log(`\n${'='.repeat(60)}`);
     console.log(`📨 TallBob incoming SMS webhook received`);
     console.log(`   EventID: ${req.body.eventID}`);
     console.log(`   EventType: ${req.body.eventType}`);
     console.log(`   From: ${req.body.recipient}`);
     console.log(`   Direction: ${req.body.direction || 'unknown'}`);
     console.log(`   Message: ${req.body.messageText?.substring(0, 50)}`);
+    console.log(`   Full Body:`, JSON.stringify(req.body, null, 2));
+    console.log(`${'='.repeat(60)}`);
     res.status(200).json({ received: true });
     setImmediate(() => processIncomingMessage(req.body, 'SMS'));
   });
 
   app.post('/tallbob/incoming/mms', async (req, res) => {
+    console.log(`\n${'='.repeat(60)}`);
     console.log(`📨 TallBob incoming MMS webhook received`);
     console.log(`   EventID: ${req.body.eventID}`);
     console.log(`   EventType: ${req.body.eventType}`);
     console.log(`   From: ${req.body.recipient}`);
     console.log(`   Direction: ${req.body.direction || 'unknown'}`);
     console.log(`   Message: ${req.body.messageText?.substring(0, 50)}`);
+    console.log(`   Media: ${req.body.media?.length || 0} items`);
+    console.log(`   Full Body:`, JSON.stringify(req.body, null, 2));
+    console.log(`${'='.repeat(60)}`);
     res.status(200).json({ received: true });
     setImmediate(() => processIncomingMessage(req.body, 'MMS'));
   });
@@ -719,11 +732,14 @@ export default async (app, tallbobService, ghlService, bluebubblesService) => {
       const fromPhone = blueData.handle?.address;
       const messageText = blueData.text || blueData.body || '';
       
+      console.log(`\n${'='.repeat(60)}`);
       console.log(`📨 BlueBubbles incoming webhook received`);
       console.log(`   GUID: ${messageGuid}`);
       console.log(`   From: ${fromPhone}`);
       console.log(`   isFromMe: ${isFromMe}`);
       console.log(`   Message: ${messageText?.substring(0, 50)}`);
+      console.log(`   Full Data:`, JSON.stringify(req.body, null, 2));
+      console.log(`${'='.repeat(60)}`);
       
       if (isFromMe) {
         console.log(`   📤 This is an outbound message (sent by us) - checking for delivery confirmation`);
