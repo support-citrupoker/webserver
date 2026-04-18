@@ -484,7 +484,8 @@ export default async (app, tallbobService, ghlService, bluebubblesService) => {
                 delivered: true, 
                 status: 'delivered',
                 guid: messageGuid,
-                timestamp: new Date().toISOString()
+                timestamp: new Date().toISOString(),
+                startTime: pending.timestamp
               });
             }
             // Don't delete immediately, keep for status queries
@@ -754,7 +755,8 @@ export default async (app, tallbobService, ghlService, bluebubblesService) => {
                 delivered: true, 
                 status: 'delivered',
                 guid: messageGuid,
-                timestamp: new Date().toISOString()
+                timestamp: new Date().toISOString(),
+                startTime: pending.timestamp
               });
             }
             // Don't delete immediately, keep for status queries
@@ -866,7 +868,7 @@ export default async (app, tallbobService, ghlService, bluebubblesService) => {
     }
   });
 
-  // BLUEBUBBLES SEND - Waits for webhook confirmation before returning 200
+  // FIXED: BlueBubbles send with webhook confirmation (fire and forget)
   app.post('/bluebubbles/send-message', async (req, res) => {
     try {
       console.log(`\n${'='.repeat(60)}`);
@@ -914,9 +916,8 @@ export default async (app, tallbobService, ghlService, bluebubblesService) => {
       await markMessageAsSent(trackingId, 'bluebubbles');
       console.log(`   ✅ Pre-tracked message with ID: ${trackingId}`);
       
-      // Create a promise that will resolve when webhook confirms delivery
+      // Create a promise that will resolve/reject when webhook confirms delivery
       let deliveryResolved = false;
-      let deliveryTimeout;
       
       const deliveryPromise = new Promise((resolve, reject) => {
         // Store resolver in pending deliveries
@@ -930,7 +931,7 @@ export default async (app, tallbobService, ghlService, bluebubblesService) => {
             if (result.delivered) {
               resolve(result);
             } else {
-              reject(new Error('Delivery failed'));
+              reject(new Error(result.error || 'Delivery failed'));
             }
           },
           timeout: setTimeout(() => {
@@ -943,65 +944,52 @@ export default async (app, tallbobService, ghlService, bluebubblesService) => {
         });
       });
       
-      // Send the message
-      console.log(`\n📤 Sending via BlueBubbles...`);
+      // Send the message in the background (fire and forget)
+      console.log(`\n📤 Sending via BlueBubbles (background)...`);
       
-      let sendError = null;
-      try {
-        let result;
-        if (mediaUrl) {
-          result = await bluebubblesService.sendMessage({
-            to: cleanTo,
-            message: `${message} ${mediaUrl}`,
-            effectId: effectId || null
-          });
-        } else {
-          result = await bluebubblesService.sendMessage({
-            to: cleanTo,
-            message: message,
-            effectId: effectId || null
-          });
-        }
-        
-        if (!result.success) {
-          sendError = new Error(result.error || 'Failed to send message');
-        } else {
-          console.log(`   ✅ Message sent, waiting for delivery confirmation...`);
-          // Update pending with the real GUID if available
-          const pending = pendingDeliveries.get(trackingId);
-          if (pending && result.guid) {
-            pending.actualGuid = result.guid;
+      // Don't await - let it run in background
+      (async () => {
+        try {
+          let result;
+          if (mediaUrl) {
+            result = await bluebubblesService.sendMessage({
+              to: cleanTo,
+              message: `${message} ${mediaUrl}`,
+              effectId: effectId || null
+            });
+          } else {
+            result = await bluebubblesService.sendMessage({
+              to: cleanTo,
+              message: message,
+              effectId: effectId || null
+            });
           }
+          
+          if (result.success) {
+            console.log(`   ✅ Background send completed for ${trackingId}`);
+            const pending = pendingDeliveries.get(trackingId);
+            if (pending && result.guid) {
+              pending.actualGuid = result.guid;
+            }
+          } else {
+            console.log(`   ⚠️ Background send had error for ${trackingId}: ${result.error}`);
+          }
+        } catch (err) {
+          console.log(`   ⚠️ Background send error for ${trackingId}: ${err.message}`);
+          // Don't reject here - webhook might still come
         }
-      } catch (err) {
-        sendError = err;
-        console.log(`   ❌ Send failed: ${err.message}`);
-      }
-      
-      // If send failed, clean up and return error
-      if (sendError) {
-        const pending = pendingDeliveries.get(trackingId);
-        if (pending) {
-          clearTimeout(pending.timeout);
-          pendingDeliveries.delete(trackingId);
-        }
-        console.log(`\n❌❌❌ BLUEBUBBLES SEND FAILED ❌❌❌`);
-        console.log(`   Error: ${sendError.message}`);
-        return res.status(500).json({ 
-          success: false, 
-          error: sendError.message,
-          messageId: trackingId
-        });
-      }
+      })();
       
       // Wait for delivery confirmation (via webhook)
       try {
         const deliveryResult = await deliveryPromise;
+        const totalTime = Date.now() - (deliveryResult.startTime || deliveryResult.timestamp);
         
         console.log(`\n✅✅✅ BLUEBUBBLES MESSAGE DELIVERED ✅✅✅`);
         console.log(`   🆔 Tracking ID: ${trackingId}`);
         console.log(`   🆔 Actual GUID: ${deliveryResult.guid || trackingId}`);
         console.log(`   📅 Delivered at: ${deliveryResult.timestamp}`);
+        console.log(`   ⏱️  Total time: ${totalTime}ms`);
         console.log(`   ⚠️ NOT logged to GHL - only customer replies are logged\n`);
         
         res.json({ 
@@ -1009,7 +997,8 @@ export default async (app, tallbobService, ghlService, bluebubblesService) => {
           messageId: trackingId,
           actualGuid: deliveryResult.guid,
           status: 'delivered',
-          deliveredAt: deliveryResult.timestamp
+          deliveredAt: deliveryResult.timestamp,
+          responseTimeMs: totalTime
         });
         
       } catch (deliveryError) {
@@ -1028,7 +1017,7 @@ export default async (app, tallbobService, ghlService, bluebubblesService) => {
           success: false, 
           error: deliveryError.message,
           messageId: trackingId,
-          note: 'Message was sent but delivery confirmation not received'
+          note: 'Message was sent but delivery confirmation not received within 30 seconds'
         });
       }
       
