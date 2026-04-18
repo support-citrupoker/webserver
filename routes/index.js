@@ -6,6 +6,10 @@ const processedEvents = new Set();
 const processedExpiry = new Map();
 const processingLock = new Set();
 
+// Track messages sent by us to prevent loops
+const sentMessages = new Set();
+const sentMessagesExpiry = new Map();
+
 let lastApiCallTime = 0;
 const MIN_API_DELAY = 2000;
 const MAX_RETRIES = 3;
@@ -37,6 +41,7 @@ async function makeAPICall(fn, retryCount = 0, callName = 'API Call') {
   }
 }
 
+// Clean up processed events every hour
 setInterval(() => {
   const now = Date.now();
   for (const [id, timestamp] of processedExpiry.entries()) {
@@ -46,6 +51,18 @@ setInterval(() => {
     }
   }
 }, 3600000);
+
+// Clean up sent messages every 5 minutes
+setInterval(() => {
+  const now = Date.now();
+  for (const [id, timestamp] of sentMessagesExpiry.entries()) {
+    if (now - timestamp > 300000) { // Clear after 5 minutes
+      sentMessages.delete(id);
+      sentMessagesExpiry.delete(id);
+    }
+  }
+  console.log(`🧹 Cleanup: ${sentMessages.size} sent messages tracked, ${processedEvents.size} processed events tracked`);
+}, 300000);
 
 async function isEventProcessed(eventId) {
   if (!eventId) return false;
@@ -73,6 +90,25 @@ async function lockEvent(eventId) {
 async function unlockEvent(eventId) {
   if (!eventId) return;
   processingLock.delete(eventId);
+}
+
+// Track sent messages
+async function markMessageAsSent(messageId, provider) {
+  if (!messageId) return;
+  const key = `${provider}_${messageId}`;
+  sentMessages.add(key);
+  sentMessagesExpiry.set(key, Date.now());
+  console.log(`📝 Tracked sent message: ${key}`);
+}
+
+async function wasMessageSentByUs(messageId, provider) {
+  if (!messageId) return false;
+  const key = `${provider}_${messageId}`;
+  const wasSent = sentMessages.has(key);
+  if (wasSent) {
+    console.log(`🔄 Loop detected: Message ${messageId} was sent by us, skipping`);
+  }
+  return wasSent;
 }
 
 // Webhook processor for internal comments
@@ -209,6 +245,11 @@ async function sendReplyViaProvider(contactId, phoneNumber, messageText, imageUr
       
       console.log(`   ✅ iMessage sent! GUID: ${result.guid}`);
       
+      // Track this message to prevent loop
+      if (result.guid) {
+        await markMessageAsSent(result.guid, 'bluebubbles');
+      }
+      
       if (conversationId && global.ghlService) {
         try {
           await makeAPICall(
@@ -255,6 +296,11 @@ async function sendReplyViaProvider(contactId, phoneNumber, messageText, imageUr
           reference: `webhook_${contactId}_${Date.now()}`
         });
         console.log(`   ✅ SMS sent! ID: ${result.messageId}`);
+      }
+      
+      // Track this message to prevent loop
+      if (result.messageId) {
+        await markMessageAsSent(result.messageId, 'tallbob');
       }
       
       if (conversationId && global.ghlService) {
@@ -312,29 +358,63 @@ export default (app, tallbobService, ghlService, bluebubblesService) => {
       status: 'healthy',
       queueSize: webhookProcessingQueue.length,
       isProcessing: isProcessingWebhookQueue,
+      trackedSentMessages: sentMessages.size,
+      trackedProcessedEvents: processedEvents.size,
       timestamp: new Date().toISOString()
     });
   });
 
   async function processIncomingMessage(messageData, provider = 'SMS') {
+    console.log(`\n🔍 PROCESSING INCOMING MESSAGE from ${provider}`);
+    
     if (provider === 'SMS' || provider === 'MMS') {
       const validEvents = ['message_received', 'message_received_mms'];
       if (!validEvents.includes(messageData.eventType)) {
+        console.log(`⏭️ Not a valid event type: ${messageData.eventType}`);
         return;
       }
     }
 
     let eventId;
+    let messageIdToCheck;
+    let providerName;
+    
     if (provider === 'BLUEBUBBLES') {
       const blueData = messageData.data || messageData;
+      
+      // CRITICAL: Skip if this message is from me (sent by us)
       if (blueData.isFromMe === true) {
+        console.log(`⏭️ Skipping BlueBubbles message - isFromMe flag is true (this is our own message)`);
         return;
       }
+      
+      // Check if this message was sent by us via our tracking system
+      messageIdToCheck = blueData.guid || messageData.guid;
+      providerName = 'bluebubbles';
+      
+      if (messageIdToCheck && await wasMessageSentByUs(messageIdToCheck, providerName)) {
+        console.log(`⏭️ Skipping BlueBubbles message ${messageIdToCheck} - was sent by us (tracked)`);
+        return;
+      }
+      
       eventId = blueData.guid || messageData.guid || blueData.messageGuid || 
                 `${blueData.handle?.address}_${blueData.dateCreated}`;
+                
+      console.log(`📱 BlueBubbles message received from: ${blueData.handle?.address}, isFromMe: ${blueData.isFromMe}, GUID: ${messageIdToCheck}`);
     } else {
+      // Check TallBob message
+      messageIdToCheck = messageData.eventID || messageData.id;
+      providerName = 'tallbob';
+      
+      if (messageIdToCheck && await wasMessageSentByUs(messageIdToCheck, providerName)) {
+        console.log(`⏭️ Skipping TallBob message ${messageIdToCheck} - was sent by us (tracked)`);
+        return;
+      }
+      
       eventId = messageData.eventID || messageData.id || 
                 `${messageData.recipient}_${messageData.timestamp}`;
+                
+      console.log(`📱 TallBob message received from: ${messageData.recipient}, EventID: ${messageIdToCheck}`);
     }
     
     if (!eventId) {
@@ -344,13 +424,22 @@ export default (app, tallbobService, ghlService, bluebubblesService) => {
     const uniqueEventId = `${provider}_${eventId}`;
 
     const processed = await isEventProcessed(uniqueEventId);
-    if (processed) return;
+    if (processed) {
+      console.log(`⏭️ Event already processed: ${uniqueEventId}`);
+      return;
+    }
 
     const isLocked = await isEventProcessing(uniqueEventId);
-    if (isLocked) return;
+    if (isLocked) {
+      console.log(`⏭️ Event already being processed: ${uniqueEventId}`);
+      return;
+    }
 
     const locked = await lockEvent(uniqueEventId);
-    if (!locked) return;
+    if (!locked) {
+      console.log(`⏭️ Could not lock event: ${uniqueEventId}`);
+      return;
+    }
 
     let customerPhone, providerNumber, messageText, timestamp, media, contactID, campaignID, reference;
     
@@ -364,6 +453,7 @@ export default (app, tallbobService, ghlService, bluebubblesService) => {
       } else if (blueData.from) {
         customerPhone = blueData.from;
       } else {
+        console.log(`❌ No phone number found in BlueBubbles message`);
         await unlockEvent(uniqueEventId);
         return;
       }
@@ -386,8 +476,12 @@ export default (app, tallbobService, ghlService, bluebubblesService) => {
         customerPhone = `+${customerPhone.replace(/\D/g, '')}`;
       }
       
+      console.log(`   📞 Customer phone: ${customerPhone}`);
+      console.log(`   💬 Message: "${messageText?.substring(0, 50)}"`);
+      
     } else {
       if (!messageData.recipient || !messageData.sentVia) {
+        console.log(`❌ Missing recipient or sentVia in TallBob message`);
         await unlockEvent(uniqueEventId);
         return;
       }
@@ -399,11 +493,15 @@ export default (app, tallbobService, ghlService, bluebubblesService) => {
       contactID = messageData.contactID;
       campaignID = messageData.campaignID;
       reference = messageData.reference;
+      
+      console.log(`   📞 Customer phone: ${customerPhone}`);
+      console.log(`   💬 Message: "${messageText?.substring(0, 50)}"`);
     }
 
     const locationId = ghlService.locationId || process.env.GHL_LOCATION_ID;
 
     if (!locationId) {
+      console.log(`❌ No location ID found`);
       await unlockEvent(uniqueEventId);
       return;
     }
@@ -412,6 +510,7 @@ export default (app, tallbobService, ghlService, bluebubblesService) => {
     const messageType = provider === 'BLUEBUBBLES' ? 'iMessage' : (provider === 'MMS' ? 'MMS' : 'SMS');
 
     try {
+      console.log(`📝 Creating/updating contact in GHL...`);
       const contactData = {
         phone: customerPhone,
         firstName: messageData.firstName || 'Unknown',
@@ -436,13 +535,18 @@ export default (app, tallbobService, ghlService, bluebubblesService) => {
         'upsertContact'
       );
 
+      console.log(`✅ Contact created/updated: ${contact.id}`);
+
       await delay(1000);
 
+      console.log(`💬 Getting/creating conversation...`);
       const { conversation } = await makeAPICall(
         () => ghlService.getOrCreateConversation(contact.id, messageType, locationId),
         0,
         'getOrCreateConversation'
       );
+
+      console.log(`✅ Conversation: ${conversation.id}`);
 
       await delay(1000);
       
@@ -466,41 +570,52 @@ export default (app, tallbobService, ghlService, bluebubblesService) => {
       );
 
       await markEventProcessed(uniqueEventId);
+      console.log(`✅ Message successfully logged to GHL`);
 
     } catch (error) {
-      // Silent
+      console.error(`❌ Error processing incoming message:`, error.message);
     } finally {
       await unlockEvent(uniqueEventId);
     }
   }
 
   app.post('/tallbob/incoming/sms', async (req, res) => {
-    try {
-      res.status(200).json({ received: true });
-      setImmediate(() => processIncomingMessage(req.body, 'SMS'));
-    } catch (error) {
-      res.status(200).json({ received: true });
-    }
+    console.log(`📨 TallBob incoming SMS webhook received`);
+    console.log(`   EventID: ${req.body.eventID}`);
+    console.log(`   From: ${req.body.recipient}`);
+    console.log(`   Message: ${req.body.messageText?.substring(0, 50)}`);
+    res.status(200).json({ received: true });
+    setImmediate(() => processIncomingMessage(req.body, 'SMS'));
   });
 
   app.post('/tallbob/incoming/mms', async (req, res) => {
-    try {
-      res.status(200).json({ received: true });
-      setImmediate(() => processIncomingMessage(req.body, 'MMS'));
-    } catch (error) {
-      res.status(200).json({ received: true });
-    }
+    console.log(`📨 TallBob incoming MMS webhook received`);
+    console.log(`   EventID: ${req.body.eventID}`);
+    console.log(`   From: ${req.body.recipient}`);
+    console.log(`   Message: ${req.body.messageText?.substring(0, 50)}`);
+    res.status(200).json({ received: true });
+    setImmediate(() => processIncomingMessage(req.body, 'MMS'));
   });
 
   app.post('/bluebubbles/incoming', async (req, res) => {
     try {
       const apiPassword = req.query.password || req.headers['x-bluebubbles-password'];
       if (process.env.BLUEBUBBLES_PASSWORD && apiPassword !== process.env.BLUEBUBBLES_PASSWORD) {
+        console.log(`❌ Unauthorized BlueBubbles webhook attempt`);
         return res.status(401).json({ error: 'Unauthorized' });
       }
+      
+      const blueData = req.body.data || req.body;
+      console.log(`📨 BlueBubbles incoming webhook received`);
+      console.log(`   GUID: ${blueData.guid}`);
+      console.log(`   From: ${blueData.handle?.address}`);
+      console.log(`   isFromMe: ${blueData.isFromMe}`);
+      console.log(`   Message: ${blueData.text?.substring(0, 50)}`);
+      
       res.status(200).json({ received: true });
       setImmediate(() => processIncomingMessage(req.body, 'BLUEBUBBLES'));
     } catch (error) {
+      console.error(`❌ Error in BlueBubbles webhook:`, error.message);
       res.status(200).json({ received: true });
     }
   });
@@ -592,6 +707,12 @@ export default (app, tallbobService, ghlService, bluebubblesService) => {
           reference: `ghl_${Date.now()}` 
         });
         console.log(`   ✅ SMS send response:`, JSON.stringify(result, null, 2));
+      }
+
+      // Track this message to prevent loop
+      if (result.messageId) {
+        await markMessageAsSent(result.messageId, 'tallbob');
+        console.log(`   ✅ Tracked message ID: ${result.messageId}`);
       }
 
       // Log to GHL
@@ -732,6 +853,12 @@ export default (app, tallbobService, ghlService, bluebubblesService) => {
       
       console.log(`   ✅ Send response:`, JSON.stringify(result, null, 2));
 
+      // Track this message to prevent loop
+      if (result.guid) {
+        await markMessageAsSent(result.guid, 'bluebubbles');
+        console.log(`   ✅ Tracked message GUID: ${result.guid}`);
+      }
+
       // Log to GHL
       if (contactId || conversationId) {
         console.log(`\n📝 Logging message to GHL...`);
@@ -835,7 +962,9 @@ export default (app, tallbobService, ghlService, bluebubblesService) => {
       success: true,
       cacheSize: processedEvents.size,
       locksSize: processingLock.size,
-      events: Array.from(processedEvents).slice(-10)
+      sentMessagesSize: sentMessages.size,
+      events: Array.from(processedEvents).slice(-10),
+      sentMessages: Array.from(sentMessages).slice(-10)
     });
   });
 
