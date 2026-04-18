@@ -23,7 +23,8 @@ global.__basedir = __dirname
 // Validate environment variables
 const requiredEnvVars = [
   'GHL_PRIVATE_INTEGRATION_TOKEN',
-  'GHL_LOCATION_ID',
+  'TALLBOB_GHL_LOCATION_ID',  // Changed from GHL_LOCATION_ID
+  'BLUEBUBBLES_GHL_LOCATION_ID',  // Added BlueBubbles location ID
   'TALLBOB_API_USERNAME',
   'TALLBOB_API_KEY'
 ]
@@ -98,6 +99,10 @@ app.get('/health', (req, res) => {
       ghl: !!ghlService,
       bluebubbles: !!bluebubblesService,
       tracker: !!commentTracker
+    },
+    subAccounts: {
+      tallbob: process.env.TALLBOB_GHL_LOCATION_ID,
+      bluebubbles: process.env.BLUEBUBBLES_GHL_LOCATION_ID
     }
   })
 })
@@ -254,6 +259,8 @@ app.get('/test/ghl/phone-convos', async (req, res) => {
     const formattedPhone = `+${cleanPhone}`
     console.log(`📞 Formatted: ${formattedPhone}`)
 
+    // Note: This will search in the default location (Tall Bob)
+    // You can specify which sub-account to search by passing locationId
     const contacts = await ghlService.searchContactsByPhone(formattedPhone)
     
     if (!contacts || contacts.length === 0) {
@@ -336,6 +343,8 @@ function startHttpServer() {
     console.log(`✅ HTTP Server running on port ${HTTP_PORT}`)
     console.log(`📱 Tall Bob service: ${tallbobService.baseURL}`)
     console.log(`📊 GHL service: configured`)
+    console.log(`📍 Tall Bob sub-account: ${process.env.TALLBOB_GHL_LOCATION_ID}`)
+    console.log(`📍 BlueBubbles sub-account: ${process.env.BLUEBUBBLES_GHL_LOCATION_ID}`)
     if (bluebubblesService) {
       console.log(`💬 BlueBubbles service: ${bluebubblesService.serverUrl}`)
     }
@@ -374,6 +383,8 @@ if (fs.existsSync(certPath) && fs.existsSync(keyPath)) {
       console.log(`🔒 Secure access: https://www.cayked.store`)
       console.log(`📱 Tall Bob service: ${tallbobService.baseURL}`)
       console.log(`📊 GHL service: configured`)
+      console.log(`📍 Tall Bob sub-account: ${process.env.TALLBOB_GHL_LOCATION_ID}`)
+      console.log(`📍 BlueBubbles sub-account: ${process.env.BLUEBUBBLES_GHL_LOCATION_ID}`)
       if (bluebubblesService) {
         console.log(`💬 BlueBubbles service: ${bluebubblesService.serverUrl}`)
       }
