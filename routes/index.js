@@ -1,6 +1,11 @@
 // routes/index.js
 import { join } from 'path';
 import crypto from 'crypto';
+import CommentTracker from './tracker.service.js';
+
+// Initialize tracker
+const commentTracker = new CommentTracker();
+await commentTracker.initialize();
 
 const processedEvents = new Set();
 const processedExpiry = new Map();
@@ -111,6 +116,28 @@ async function wasMessageSentByUs(messageId, provider) {
   return wasSent;
 }
 
+// Helper to check if we've already processed this comment recently
+async function isCommentDuplicate(contactId, comment, provider) {
+  if (!comment || !contactId) return false;
+  
+  // Use the tracker to check if this is a new comment
+  const { isNew } = await commentTracker.checkComment(contactId, comment);
+  
+  if (!isNew) {
+    console.log(`🔄 Duplicate comment detected for contact ${contactId}: "${comment.substring(0, 50)}"`);
+    
+    // Update activity to show we saw this duplicate
+    await commentTracker.updateContactActivity(contactId, {
+      last_activity: Math.floor(Date.now() / 1000),
+      last_provider: provider
+    });
+    
+    return true;
+  }
+  
+  return false;
+}
+
 // Webhook processor for internal comments
 let webhookProcessingQueue = [];
 let isProcessingWebhookQueue = false;
@@ -160,6 +187,18 @@ async function processInternalCommentWebhook(payload) {
       return { success: true, message: 'Internal note', skipped: true };
     }
     
+    // Check for duplicate using tracker
+    const isDuplicate = await isCommentDuplicate(
+      payload.contactId, 
+      payload.message, 
+      'internal-comment'
+    );
+    
+    if (isDuplicate) {
+      console.log(`⏭️ Duplicate comment detected, skipping to prevent loop`);
+      return { success: true, message: 'Duplicate comment', skipped: true };
+    }
+    
     const useIMessage = process.env.IMESSAGEORSMS === 'true';
     const provider = useIMessage ? 'bluebubbles' : 'tallbob';
     
@@ -184,6 +223,12 @@ async function processInternalCommentWebhook(payload) {
       console.log(`\n✅ Webhook processed successfully in ${duration}ms`);
       console.log(`   📤 Reply sent via ${sendResult.provider.toUpperCase()}`);
       console.log(`   🆔 Message ID: ${sendResult.messageId}`);
+      
+      // Update tracker with successful send
+      await commentTracker.updateContactActivity(payload.contactId, {
+        last_activity: Math.floor(Date.now() / 1000),
+        last_provider: sendResult.provider
+      });
     } else {
       console.log(`\n❌ Webhook processing failed in ${duration}ms`);
       console.log(`   Error: ${sendResult.error}`);
@@ -228,8 +273,6 @@ async function sendReplyViaProvider(contactId, phoneNumber, messageText, imageUr
       
       // BlueBubbles only needs 'to' and 'message' - 'from' is not used
       if (imageUrl) {
-        // For attachments, we need to handle differently
-        // Since your service doesn't have sendAttachment, we'll include URL in message
         result = await global.bluebubblesService.sendMessage({
           to: phoneNumber,
           message: `${messageText} ${imageUrl}`,
@@ -360,6 +403,7 @@ export default (app, tallbobService, ghlService, bluebubblesService) => {
       isProcessing: isProcessingWebhookQueue,
       trackedSentMessages: sentMessages.size,
       trackedProcessedEvents: processedEvents.size,
+      trackedContacts: commentTracker.getCount(),
       timestamp: new Date().toISOString()
     });
   });
@@ -536,6 +580,9 @@ export default (app, tallbobService, ghlService, bluebubblesService) => {
       );
 
       console.log(`✅ Contact created/updated: ${contact.id}`);
+      
+      // Add to tracker for future duplicate detection
+      await commentTracker.addContact(contact.id, customerPhone);
 
       await delay(1000);
 
@@ -957,12 +1004,14 @@ export default (app, tallbobService, ghlService, bluebubblesService) => {
     }
   });
 
-  app.get('/test/deduplication-stats', (req, res) => {
+  app.get('/test/deduplication-stats', async (req, res) => {
+    const trackedCount = await commentTracker.getCount();
     res.json({
       success: true,
       cacheSize: processedEvents.size,
       locksSize: processingLock.size,
       sentMessagesSize: sentMessages.size,
+      trackedContacts: trackedCount,
       events: Array.from(processedEvents).slice(-10),
       sentMessages: Array.from(sentMessages).slice(-10)
     });
@@ -981,6 +1030,32 @@ export default (app, tallbobService, ghlService, bluebubblesService) => {
       });
     } catch (error) {
       res.json({ success: false, error: error.message });
+    }
+  });
+
+  // Add endpoint to clear duplicate cache if needed
+  app.post('/test/clear-duplicate-cache', async (req, res) => {
+    try {
+      // Clear in-memory caches
+      processedEvents.clear();
+      processedExpiry.clear();
+      sentMessages.clear();
+      sentMessagesExpiry.clear();
+      
+      // Clear SQLite cache (optional - uncomment if needed)
+      // await commentTracker.db.run('DELETE FROM monitored_contacts');
+      
+      res.json({ 
+        success: true, 
+        message: 'Duplicate detection caches cleared',
+        cleared: {
+          processedEvents: processedEvents.size,
+          sentMessages: sentMessages.size,
+          trackedContacts: await commentTracker.getCount()
+        }
+      });
+    } catch (error) {
+      res.status(500).json({ success: false, error: error.message });
     }
   });
 
