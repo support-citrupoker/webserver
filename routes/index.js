@@ -60,7 +60,7 @@ setInterval(() => {
 setInterval(() => {
   const now = Date.now();
   for (const [id, timestamp] of sentMessagesExpiry.entries()) {
-    if (now - timestamp > 300000) { // Clear after 5 minutes
+    if (now - timestamp > 300000) {
       sentMessages.delete(id);
       sentMessagesExpiry.delete(id);
     }
@@ -120,18 +120,14 @@ async function isCommentDuplicate(contactId, comment, provider) {
   if (!comment || !contactId || !commentTracker) return false;
   
   try {
-    // Use the tracker to check if this is a new comment
     const { isNew } = await commentTracker.checkComment(contactId, comment);
     
     if (!isNew) {
       console.log(`🔄 Duplicate comment detected for contact ${contactId}: "${comment.substring(0, 50)}"`);
-      
-      // Update activity to show we saw this duplicate
       await commentTracker.updateContactActivity(contactId, {
         last_activity: Math.floor(Date.now() / 1000),
         last_provider: provider
       });
-      
       return true;
     }
   } catch (error) {
@@ -181,13 +177,11 @@ async function processInternalCommentWebhook(payload) {
     console.log(`   🔍 Direction: ${payload.direction || 'unknown'}`);
     console.log(`${'='.repeat(60)}`);
     
-    // CRITICAL: Skip if this is an OUTBOUND message (sent by us)
     if (payload.direction === 'outbound' || payload.type === 'outbound') {
       console.log(`⏭️ Skipping outbound message - this was sent by us`);
       return { success: true, message: 'Outbound message', skipped: true };
     }
     
-    // Check if this message was added by our system (look for our provider markers)
     if (payload.provider === 'Tall Bob' || payload.provider === 'BlueBubbles') {
       console.log(`⏭️ Skipping message from ${payload.provider} - already logged by us`);
       return { success: true, message: 'Already logged', skipped: true };
@@ -203,7 +197,6 @@ async function processInternalCommentWebhook(payload) {
       return { success: true, message: 'Internal note', skipped: true };
     }
     
-    // Check for duplicate using tracker
     const isDuplicate = await isCommentDuplicate(
       payload.contactId, 
       payload.message, 
@@ -240,7 +233,6 @@ async function processInternalCommentWebhook(payload) {
       console.log(`   📤 Reply sent via ${sendResult.provider.toUpperCase()}`);
       console.log(`   🆔 Message ID: ${sendResult.messageId}`);
       
-      // Update tracker with successful send
       if (commentTracker) {
         await commentTracker.updateContactActivity(payload.contactId, {
           last_activity: Math.floor(Date.now() / 1000),
@@ -289,7 +281,6 @@ async function sendReplyViaProvider(contactId, phoneNumber, messageText, imageUr
         throw new Error('BlueBubbles service not configured');
       }
       
-      // BlueBubbles only needs 'to' and 'message' - 'from' is not used
       if (imageUrl) {
         result = await global.bluebubblesService.sendMessage({
           to: phoneNumber,
@@ -306,7 +297,6 @@ async function sendReplyViaProvider(contactId, phoneNumber, messageText, imageUr
       
       console.log(`   ✅ iMessage sent! GUID: ${result.guid}`);
       
-      // Track this message to prevent loop
       if (result.guid) {
         await markMessageAsSent(result.guid, 'bluebubbles');
       }
@@ -359,7 +349,6 @@ async function sendReplyViaProvider(contactId, phoneNumber, messageText, imageUr
         console.log(`   ✅ SMS sent! ID: ${result.sms_id || result.message_id || result.id}`);
       }
       
-      // Track this message to prevent loop - FIXED for Tall Bob
       const tallBobMsgId = result.sms_id || result.message_id || result.id;
       if (tallBobMsgId) {
         await markMessageAsSent(tallBobMsgId, 'tallbob');
@@ -401,7 +390,6 @@ async function sendReplyViaProvider(contactId, phoneNumber, messageText, imageUr
 
 export default async (app, tallbobService, ghlService, bluebubblesService) => {
   
-  // Initialize tracker
   commentTracker = new CommentTracker();
   await commentTracker.initialize();
   
@@ -437,11 +425,40 @@ export default async (app, tallbobService, ghlService, bluebubblesService) => {
 
   async function processIncomingMessage(messageData, provider = 'SMS') {
     console.log(`\n🔍 PROCESSING INCOMING MESSAGE from ${provider}`);
+    console.log(`   Full payload keys: ${Object.keys(messageData).join(', ')}`);
+    
+    // ========== OUTGOING MESSAGE DETECTION ==========
+    
+    if (messageData.direction === 'outbound' || messageData.type === 'outbound') {
+      console.log(`⏭️ Skipping outbound message - direction: ${messageData.direction}`);
+      return;
+    }
+    
+    if (messageData.eventType === 'message_sent' || 
+        messageData.eventType === 'message_delivered' ||
+        messageData.eventType === 'message_queued') {
+      console.log(`⏭️ Skipping ${messageData.eventType} event - this is not an incoming message`);
+      return;
+    }
+    
+    const incomingMessageId = messageData.eventID || messageData.id || messageData.sms_id || messageData.messageId;
+    if (incomingMessageId) {
+      if (await wasMessageSentByUs(incomingMessageId, 'tallbob') || 
+          await wasMessageSentByUs(incomingMessageId, 'bluebubbles')) {
+        console.log(`⏭️ Skipping incoming webhook for message ${incomingMessageId} - was sent by us`);
+        return;
+      }
+    }
+    
+    if (messageData.type === 'internal' || messageData.isInternal === true) {
+      console.log(`⏭️ Skipping internal message`);
+      return;
+    }
     
     if (provider === 'SMS' || provider === 'MMS') {
       const validEvents = ['message_received', 'message_received_mms'];
       if (!validEvents.includes(messageData.eventType)) {
-        console.log(`⏭️ Not a valid event type: ${messageData.eventType}`);
+        console.log(`⏭️ Not a valid event type: ${messageData.eventType} - expected message_received`);
         return;
       }
     }
@@ -453,13 +470,11 @@ export default async (app, tallbobService, ghlService, bluebubblesService) => {
     if (provider === 'BLUEBUBBLES') {
       const blueData = messageData.data || messageData;
       
-      // CRITICAL: Skip if this message is from me (sent by us)
       if (blueData.isFromMe === true) {
         console.log(`⏭️ Skipping BlueBubbles message - isFromMe flag is true (this is our own message)`);
         return;
       }
       
-      // Check if this message was sent by us via our tracking system
       messageIdToCheck = blueData.guid || messageData.guid;
       providerName = 'bluebubbles';
       
@@ -473,7 +488,6 @@ export default async (app, tallbobService, ghlService, bluebubblesService) => {
                 
       console.log(`📱 BlueBubbles message received from: ${blueData.handle?.address}, isFromMe: ${blueData.isFromMe}, GUID: ${messageIdToCheck}`);
     } else {
-      // Check TallBob message
       messageIdToCheck = messageData.eventID || messageData.id;
       providerName = 'tallbob';
       
@@ -608,7 +622,6 @@ export default async (app, tallbobService, ghlService, bluebubblesService) => {
 
       console.log(`✅ Contact created/updated: ${contact.id}`);
       
-      // Add to tracker for future duplicate detection
       if (commentTracker) {
         await commentTracker.addContact(contact.id, customerPhone);
       }
@@ -658,7 +671,9 @@ export default async (app, tallbobService, ghlService, bluebubblesService) => {
   app.post('/tallbob/incoming/sms', async (req, res) => {
     console.log(`📨 TallBob incoming SMS webhook received`);
     console.log(`   EventID: ${req.body.eventID}`);
+    console.log(`   EventType: ${req.body.eventType}`);
     console.log(`   From: ${req.body.recipient}`);
+    console.log(`   Direction: ${req.body.direction || 'unknown'}`);
     console.log(`   Message: ${req.body.messageText?.substring(0, 50)}`);
     res.status(200).json({ received: true });
     setImmediate(() => processIncomingMessage(req.body, 'SMS'));
@@ -667,7 +682,9 @@ export default async (app, tallbobService, ghlService, bluebubblesService) => {
   app.post('/tallbob/incoming/mms', async (req, res) => {
     console.log(`📨 TallBob incoming MMS webhook received`);
     console.log(`   EventID: ${req.body.eventID}`);
+    console.log(`   EventType: ${req.body.eventType}`);
     console.log(`   From: ${req.body.recipient}`);
+    console.log(`   Direction: ${req.body.direction || 'unknown'}`);
     console.log(`   Message: ${req.body.messageText?.substring(0, 50)}`);
     res.status(200).json({ received: true });
     setImmediate(() => processIncomingMessage(req.body, 'MMS'));
@@ -698,7 +715,6 @@ export default async (app, tallbobService, ghlService, bluebubblesService) => {
 
   // ==================== OUTGOING MESSAGES ====================
 
-  // TALL BOB SEND MESSAGE - FIXED
   app.post('/tallbob/send-message', async (req, res) => {
     try {
       console.log(`\n${'='.repeat(60)}`);
@@ -709,7 +725,6 @@ export default async (app, tallbobService, ghlService, bluebubblesService) => {
       
       let { to, from, message, mediaUrl, contactId, locationId, conversationId } = req.body;
       
-      // SUPPORT GHL WEBHOOK FORMAT
       if (!to && req.body.phone) {
         to = req.body.phone;
         console.log(`   🔄 Using 'phone' field as 'to': ${to}`);
@@ -785,10 +800,8 @@ export default async (app, tallbobService, ghlService, bluebubblesService) => {
         console.log(`   ✅ SMS send response:`, JSON.stringify(result, null, 2));
       }
 
-      // FIXED: Get the correct message ID from Tall Bob response
       const tallBobMessageId = result.sms_id || result.message_id || result.id;
       
-      // Track this message to prevent loop
       if (tallBobMessageId) {
         await markMessageAsSent(tallBobMessageId, 'tallbob');
         console.log(`   ✅ Tracked message ID: ${tallBobMessageId}`);
@@ -797,7 +810,6 @@ export default async (app, tallbobService, ghlService, bluebubblesService) => {
         console.log(`   Response keys: ${Object.keys(result).join(', ')}`);
       }
 
-      // Log to GHL
       if (contactId || conversationId) {
         console.log(`\n📝 Logging message to GHL...`);
         try {
@@ -858,7 +870,6 @@ export default async (app, tallbobService, ghlService, bluebubblesService) => {
     }
   });
 
-  // BLUEBUBBLES SEND MESSAGE
   app.post('/bluebubbles/send-message', async (req, res) => {
     try {
       console.log(`\n${'='.repeat(60)}`);
@@ -869,7 +880,6 @@ export default async (app, tallbobService, ghlService, bluebubblesService) => {
       
       let { to, from, message, mediaUrl, contactId, locationId, conversationId, effectId } = req.body;
       
-      // SUPPORT GHL WEBHOOK FORMAT
       if (!to && req.body.phone) {
         to = req.body.phone;
         console.log(`   🔄 Using 'phone' field as 'to': ${to}`);
@@ -915,13 +925,11 @@ export default async (app, tallbobService, ghlService, bluebubblesService) => {
         });
       }
 
-      // Clean the phone number
       const cleanTo = to.replace(/[^\d+]/g, '');
       console.log(`\n📱 Cleaned phone number: ${cleanTo}`);
 
       console.log(`\n📤 Attempting to send via BlueBubbles...`);
       
-      // BlueBubbles service only needs 'to' and 'message'
       let result;
       if (mediaUrl) {
         console.log(`   📸 Sending as attachment (including URL in message)`);
@@ -941,13 +949,11 @@ export default async (app, tallbobService, ghlService, bluebubblesService) => {
       
       console.log(`   ✅ Send response:`, JSON.stringify(result, null, 2));
 
-      // Track this message to prevent loop
       if (result.guid) {
         await markMessageAsSent(result.guid, 'bluebubbles');
         console.log(`   ✅ Tracked message GUID: ${result.guid}`);
       }
 
-      // Log to GHL
       if (contactId || conversationId) {
         console.log(`\n📝 Logging message to GHL...`);
         try {
@@ -1091,10 +1097,8 @@ export default async (app, tallbobService, ghlService, bluebubblesService) => {
     });
   });
 
-  // Add endpoint to clear duplicate cache if needed
   app.post('/test/clear-duplicate-cache', async (req, res) => {
     try {
-      // Clear in-memory caches
       processedEvents.clear();
       processedExpiry.clear();
       sentMessages.clear();
