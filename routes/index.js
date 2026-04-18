@@ -23,6 +23,14 @@ const MAX_RETRIES = 3;
 
 const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
+// Helper function to detect if a URL is an image
+function isImageUrl(url) {
+  if (!url) return false;
+  const imageExtensions = /\.(jpg|jpeg|png|gif|bmp|webp|heic|heif|tiff|svg)$/i;
+  const imageHosts = /(imgur\.com|ibb\.co|image\.host|flickr\.com|i\.imgur\.com)/i;
+  return imageExtensions.test(url) || imageHosts.test(url);
+}
+
 async function makeAPICall(fn, retryCount = 0, callName = 'API Call') {
   const now = Date.now();
   const timeSinceLastCall = now - lastApiCallTime;
@@ -273,7 +281,7 @@ function extractImageUrl(text) {
     const lowerUrl = url.toLowerCase();
     if (lowerUrl.includes('.jpg') || lowerUrl.includes('.png') || 
         lowerUrl.includes('.jpeg') || lowerUrl.includes('.gif') ||
-        lowerUrl.includes('imgur.com')) {
+        lowerUrl.includes('imgur.com') || lowerUrl.includes('ibb.co')) {
       return url;
     }
   }
@@ -286,6 +294,9 @@ async function sendReplyViaProvider(contactId, phoneNumber, messageText, imageUr
     console.log(`   📞 To: ${phoneNumber}`);
     console.log(`   💬 Message: "${messageText.substring(0, 100)}${messageText.length > 100 ? '...' : ''}"`);
     console.log(`   🖼️ Image: ${imageUrl ? 'Yes' : 'No'}`);
+    if (imageUrl && isImageUrl(imageUrl)) {
+      console.log(`   📸 Image URL detected: ${imageUrl}`);
+    }
     
     let result;
     
@@ -294,13 +305,17 @@ async function sendReplyViaProvider(contactId, phoneNumber, messageText, imageUr
         throw new Error('BlueBubbles service not configured');
       }
       
-      if (imageUrl) {
-        result = await global.bluebubblesService.sendMessage({
+      // Check if we have an image URL
+      if (imageUrl && isImageUrl(imageUrl)) {
+        console.log(`   📸 Sending as MMS/attachment via BlueBubbles`);
+        result = await global.bluebubblesService.sendAttachment({
           to: phoneNumber,
-          message: `${messageText} ${imageUrl}`,
+          message: messageText || '📸 Image',
+          attachmentUrl: imageUrl,
           effectId: null
         });
       } else {
+        console.log(`   💬 Sending as text message via BlueBubbles`);
         result = await global.bluebubblesService.sendMessage({
           to: phoneNumber,
           message: messageText,
@@ -317,11 +332,13 @@ async function sendReplyViaProvider(contactId, phoneNumber, messageText, imageUr
       return { success: true, provider: 'bluebubbles', messageId: result.guid };
       
     } else {
+      // Tall Bob MMS handling
       if (!global.tallbobService) {
         throw new Error('TallBob service not configured');
       }
       
-      if (imageUrl) {
+      if (imageUrl && isImageUrl(imageUrl)) {
+        console.log(`   📸 Sending as MMS via Tall Bob`);
         result = await global.tallbobService.sendMMS({
           to: phoneNumber,
           from: process.env.TALLBOB_NUMBER || '+61428616133',
@@ -331,6 +348,7 @@ async function sendReplyViaProvider(contactId, phoneNumber, messageText, imageUr
         });
         console.log(`   ✅ MMS sent! ID: ${result.sms_id || result.message_id || result.id}`);
       } else {
+        console.log(`   💬 Sending as SMS via Tall Bob`);
         result = await global.tallbobService.sendSMS({
           to: phoneNumber,
           from: process.env.TALLBOB_NUMBER || '+61428616133',
@@ -465,7 +483,6 @@ export default async (app, tallbobService, ghlService, bluebubblesService) => {
       const blueData = messageData.data || messageData;
       
       // Skip if this is a message we sent (isFromMe = true)
-      // These are handled separately for delivery confirmation
       if (blueData.isFromMe === true) {
         console.log(`⏭️ Skipping BlueBubbles message - isFromMe flag is true (this is our own message)`);
         return;
@@ -579,7 +596,6 @@ export default async (app, tallbobService, ghlService, bluebubblesService) => {
       console.log(`   💬 Message: "${messageText?.substring(0, 50)}"`);
     }
 
-    // Get the appropriate location ID based on the provider
     const locationId = getLocationIdForProvider(provider);
     
     if (!locationId) {
@@ -709,16 +725,13 @@ export default async (app, tallbobService, ghlService, bluebubblesService) => {
       console.log(`   isFromMe: ${isFromMe}`);
       console.log(`   Message: ${messageText?.substring(0, 50)}`);
       
-      // ONLY handle delivery confirmation for messages we sent (isFromMe = true)
       if (isFromMe) {
         console.log(`   📤 This is an outbound message (sent by us) - checking for delivery confirmation`);
         
         if (pendingDeliveries && pendingDeliveries.size > 0) {
           let matchFound = false;
           
-          // Try to find matching pending delivery by phone number and message content
           for (const [tempId, pending] of pendingDeliveries.entries()) {
-            // Match by phone number AND message content to ensure it's the same message
             if (pending.to === fromPhone && pending.message === messageText) {
               console.log(`   ✅ Delivery confirmed for message: ${tempId}`);
               console.log(`   📊 Matched by: phone number + message content`);
@@ -735,7 +748,6 @@ export default async (app, tallbobService, ghlService, bluebubblesService) => {
                   startTime: pending.timestamp
                 });
               }
-              // Keep for a bit for status queries, then clean up
               setTimeout(() => {
                 pendingDeliveries.delete(tempId);
               }, 60000);
@@ -746,18 +758,15 @@ export default async (app, tallbobService, ghlService, bluebubblesService) => {
           
           if (!matchFound) {
             console.log(`   ⚠️ No matching pending delivery found for this outbound message`);
-            console.log(`   Possible reasons: delivery timeout already occurred, or message from different session`);
           }
         } else {
-          console.log(`   ℹ️ No pending deliveries to match (this might be an old webhook or message from another system)`);
+          console.log(`   ℹ️ No pending deliveries to match`);
         }
         
-        // Always return 200 for isFromMe messages (don't process as incoming)
         res.status(200).json({ received: true });
         return;
       }
       
-      // For customer messages (isFromMe = false), process as incoming
       console.log(`   📥 This is an inbound customer message - processing for GHL`);
       res.status(200).json({ received: true });
       setImmediate(() => processIncomingMessage(req.body, 'BLUEBUBBLES'));
@@ -816,7 +825,7 @@ export default async (app, tallbobService, ghlService, bluebubblesService) => {
       console.log(`\n📤 Attempting to send via Tall Bob...`);
       let result;
       
-      if (mediaUrl) {
+      if (mediaUrl && isImageUrl(mediaUrl)) {
         console.log(`   📸 Sending as MMS with media URL: ${mediaUrl}`);
         result = await tallbobService.sendMMS({ 
           to, 
@@ -826,6 +835,15 @@ export default async (app, tallbobService, ghlService, bluebubblesService) => {
           reference: `send_${Date.now()}` 
         });
         console.log(`   ✅ MMS send response:`, JSON.stringify(result, null, 2));
+      } else if (mediaUrl) {
+        console.log(`   🔗 Media URL detected but not an image, sending as SMS with link`);
+        result = await tallbobService.sendSMS({ 
+          to, 
+          from, 
+          message: `${message} ${mediaUrl}`, 
+          reference: `send_${Date.now()}` 
+        });
+        console.log(`   ✅ SMS send response:`, JSON.stringify(result, null, 2));
       } else {
         console.log(`   💬 Sending as SMS`);
         result = await tallbobService.sendSMS({ 
@@ -860,7 +878,7 @@ export default async (app, tallbobService, ghlService, bluebubblesService) => {
     }
   });
 
-  // BLUEBUBBLES SEND - Waits for webhook confirmation before returning 200
+  // BLUEBUBBLES SEND - Supports both text and MMS
   app.post('/bluebubbles/send-message', async (req, res) => {
     try {
       console.log(`\n${'='.repeat(60)}`);
@@ -885,6 +903,7 @@ export default async (app, tallbobService, ghlService, bluebubblesService) => {
       console.log(`   📞 To: ${to}`);
       console.log(`   💬 Message: "${message?.substring(0, 100)}${message?.length > 100 ? '...' : ''}"`);
       console.log(`   🖼️ Media URL: ${mediaUrl || 'None'}`);
+      console.log(`   📸 Is Image: ${mediaUrl && isImageUrl(mediaUrl) ? 'Yes' : 'No'}`);
       console.log(`   ✨ Effect ID: ${effectId || 'None'}`);
 
       if (!to || !message) {
@@ -901,18 +920,14 @@ export default async (app, tallbobService, ghlService, bluebubblesService) => {
       const cleanTo = to.replace(/[^\d+]/g, '');
       console.log(`\n📱 Cleaned phone number: ${cleanTo}`);
 
-      // Generate a unique tracking ID for this message
       const trackingId = `bb_${Date.now()}_${Math.random().toString(36).substring(7)}`;
       
-      // Track the message immediately to prevent loops
       await markMessageAsSent(trackingId, 'bluebubbles');
       console.log(`   ✅ Pre-tracked message with ID: ${trackingId}`);
       
-      // Create a promise that will resolve/reject when webhook confirms delivery
       let deliveryResolved = false;
       
       const deliveryPromise = new Promise((resolve, reject) => {
-        // Store resolver in pending deliveries
         pendingDeliveries.set(trackingId, {
           to: cleanTo,
           message: message,
@@ -932,24 +947,33 @@ export default async (app, tallbobService, ghlService, bluebubblesService) => {
               console.log(`   ⏰ Delivery timeout for ${trackingId}`);
               reject(new Error('Delivery confirmation timeout after 30 seconds'));
             }
-          }, 30000) // 30 second timeout
+          }, 30000)
         });
       });
       
-      // Send the message in the background (fire and forget)
       console.log(`\n📤 Sending via BlueBubbles (background)...`);
       
-      // Don't await - let it run in background
       (async () => {
         try {
           let result;
-          if (mediaUrl) {
+          
+          if (mediaUrl && isImageUrl(mediaUrl)) {
+            console.log(`   📸 Sending as attachment (MMS/Image)`);
+            result = await bluebubblesService.sendAttachment({
+              to: cleanTo,
+              message: message,
+              attachmentUrl: mediaUrl,
+              effectId: effectId || null
+            });
+          } else if (mediaUrl) {
+            console.log(`   🔗 Media URL detected but not an image, sending as text with link`);
             result = await bluebubblesService.sendMessage({
               to: cleanTo,
               message: `${message} ${mediaUrl}`,
               effectId: effectId || null
             });
           } else {
+            console.log(`   💬 Sending as text message`);
             result = await bluebubblesService.sendMessage({
               to: cleanTo,
               message: message,
@@ -968,11 +992,9 @@ export default async (app, tallbobService, ghlService, bluebubblesService) => {
           }
         } catch (err) {
           console.log(`   ⚠️ Background send error for ${trackingId}: ${err.message}`);
-          // Don't reject here - webhook might still come
         }
       })();
       
-      // Wait for delivery confirmation (via webhook)
       try {
         const deliveryResult = await deliveryPromise;
         const totalTime = Date.now() - (deliveryResult.startTime || deliveryResult.timestamp);
@@ -998,7 +1020,6 @@ export default async (app, tallbobService, ghlService, bluebubblesService) => {
         console.log(`   🆔 Tracking ID: ${trackingId}`);
         console.log(`   Error: ${deliveryError.message}`);
         
-        // Clean up
         const pending = pendingDeliveries.get(trackingId);
         if (pending) {
           clearTimeout(pending.timeout);
@@ -1016,10 +1037,6 @@ export default async (app, tallbobService, ghlService, bluebubblesService) => {
     } catch (error) {
       console.error(`\n❌❌❌ BLUEBUBBLES SEND FAILED ❌❌❌`);
       console.error(`   Error message: ${error.message}`);
-      if (error.response) {
-        console.error(`   Response status: ${error.response.status}`);
-        console.error(`   Response data:`, error.response.data);
-      }
       res.status(500).json({ success: false, error: error.message });
     }
   });
@@ -1114,7 +1131,6 @@ export default async (app, tallbobService, ghlService, bluebubblesService) => {
       processedExpiry.clear();
       sentMessages.clear();
       sentMessagesExpiry.clear();
-      // Clear pending deliveries as well
       for (const [id, pending] of pendingDeliveries.entries()) {
         if (pending.timeout) clearTimeout(pending.timeout);
       }

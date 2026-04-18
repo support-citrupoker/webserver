@@ -40,7 +40,7 @@ class BlueBubblesService {
 
   async sendMessage({ to, message, from = null, effectId = null }) {
     try {
-      console.log(`\n📱 ===== BLUEBUBBLES SEND DEBUG =====`);
+      console.log(`\n📱 ===== BLUEBUBBLES SEND TEXT DEBUG =====`);
       console.log(`   Original "to" value: ${to}`);
       console.log(`   Original message: ${message}`);
       
@@ -49,22 +49,19 @@ class BlueBubblesService {
       
       // Build URL without double slashes
       const endpoint = '/api/v1/message/text';
-      const fullUrl = `${this.serverUrl}${endpoint}`;  // No trailing slash issue now
+      const fullUrl = `${this.serverUrl}${endpoint}`;
       const urlWithPassword = `${fullUrl}?password=${this.password}`;
       
       console.log(`\n📍 URL DEBUG:`);
       console.log(`   Server URL (cleaned): ${this.serverUrl}`);
       console.log(`   Endpoint: ${endpoint}`);
       console.log(`   Full URL: ${fullUrl}`);
-      console.log(`   URL with password: ${urlWithPassword}`);
       
       const payload = {
         chatGuid: chatGuid,
         tempGuid: tempGuid,
         message: message
       };
-      
-     
       
       const response = await this.client.post(urlWithPassword, payload, {
         headers: {
@@ -75,7 +72,7 @@ class BlueBubblesService {
       console.log(`\n📥 RESPONSE: Status ${response.status}`);
       
       if (response.data && response.data.status === 200) {
-        console.log(`   ✅ Message sent successfully!`);
+        console.log(`   ✅ Text message sent successfully!`);
         return {
           success: true,
           guid: response.data.data?.guid,
@@ -92,6 +89,63 @@ class BlueBubblesService {
         console.error(`   Data:`, error.response.data);
       }
       throw new Error(`Failed to send iMessage: ${error.message}`);
+    }
+  }
+
+  async sendAttachment({ to, message, attachmentUrl, effectId = null }) {
+    try {
+      console.log(`\n📱 ===== BLUEBUBBLES SEND ATTACHMENT DEBUG =====`);
+      console.log(`   Original "to" value: ${to}`);
+      console.log(`   Original message: ${message}`);
+      console.log(`   Attachment URL: ${attachmentUrl}`);
+      
+      const chatGuid = to.includes('@') ? to : this.formatPhoneNumber(to);
+      const tempGuid = this.generateTempGuid();
+      
+      // Build URL for attachment endpoint
+      const endpoint = '/api/v1/message/attachment';
+      const fullUrl = `${this.serverUrl}${endpoint}`;
+      const urlWithPassword = `${fullUrl}?password=${this.password}`;
+      
+      console.log(`\n📍 URL DEBUG:`);
+      console.log(`   Server URL (cleaned): ${this.serverUrl}`);
+      console.log(`   Endpoint: ${endpoint}`);
+      console.log(`   Full URL: ${fullUrl}`);
+      
+      const payload = {
+        chatGuid: chatGuid,
+        tempGuid: tempGuid,
+        message: message || '📸 Image',
+        attachmentUrls: [attachmentUrl], // BlueBubbles expects array of URLs
+        effectId: effectId
+      };
+      
+      const response = await this.client.post(urlWithPassword, payload, {
+        headers: {
+          'Content-Type': 'application/json'
+        }
+      });
+      
+      console.log(`\n📥 RESPONSE: Status ${response.status}`);
+      
+      if (response.data && response.data.status === 200) {
+        console.log(`   ✅ Attachment sent successfully!`);
+        return {
+          success: true,
+          guid: response.data.data?.guid,
+          messageId: response.data.data?.guid
+        };
+      } else {
+        throw new Error(response.data?.message || 'Unknown error');
+      }
+      
+    } catch (error) {
+      console.error(`   ❌ Attachment error:`, error.message);
+      if (error.response) {
+        console.error(`   Status: ${error.response.status}`);
+        console.error(`   Data:`, error.response.data);
+      }
+      throw new Error(`Failed to send iMessage attachment: ${error.message}`);
     }
   }
 
