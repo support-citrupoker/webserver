@@ -4,8 +4,7 @@ import crypto from 'crypto';
 import CommentTracker from '../services/tracker.service.js';
 
 // Initialize tracker
-const commentTracker = new CommentTracker();
-await commentTracker.initialize();
+let commentTracker;
 
 const processedEvents = new Set();
 const processedExpiry = new Map();
@@ -118,21 +117,25 @@ async function wasMessageSentByUs(messageId, provider) {
 
 // Helper to check if we've already processed this comment recently
 async function isCommentDuplicate(contactId, comment, provider) {
-  if (!comment || !contactId) return false;
+  if (!comment || !contactId || !commentTracker) return false;
   
-  // Use the tracker to check if this is a new comment
-  const { isNew } = await commentTracker.checkComment(contactId, comment);
-  
-  if (!isNew) {
-    console.log(`🔄 Duplicate comment detected for contact ${contactId}: "${comment.substring(0, 50)}"`);
+  try {
+    // Use the tracker to check if this is a new comment
+    const { isNew } = await commentTracker.checkComment(contactId, comment);
     
-    // Update activity to show we saw this duplicate
-    await commentTracker.updateContactActivity(contactId, {
-      last_activity: Math.floor(Date.now() / 1000),
-      last_provider: provider
-    });
-    
-    return true;
+    if (!isNew) {
+      console.log(`🔄 Duplicate comment detected for contact ${contactId}: "${comment.substring(0, 50)}"`);
+      
+      // Update activity to show we saw this duplicate
+      await commentTracker.updateContactActivity(contactId, {
+        last_activity: Math.floor(Date.now() / 1000),
+        last_provider: provider
+      });
+      
+      return true;
+    }
+  } catch (error) {
+    console.error(`Error checking duplicate: ${error.message}`);
   }
   
   return false;
@@ -175,7 +178,20 @@ async function processInternalCommentWebhook(payload) {
     console.log(`   🆔 Conversation ID: ${payload.conversationId}`);
     console.log(`   🆔 Contact ID: ${payload.contactId}`);
     console.log(`   📝 Type: ${payload.type}`);
+    console.log(`   🔍 Direction: ${payload.direction || 'unknown'}`);
     console.log(`${'='.repeat(60)}`);
+    
+    // CRITICAL: Skip if this is an OUTBOUND message (sent by us)
+    if (payload.direction === 'outbound' || payload.type === 'outbound') {
+      console.log(`⏭️ Skipping outbound message - this was sent by us`);
+      return { success: true, message: 'Outbound message', skipped: true };
+    }
+    
+    // Check if this message was added by our system (look for our provider markers)
+    if (payload.provider === 'Tall Bob' || payload.provider === 'BlueBubbles') {
+      console.log(`⏭️ Skipping message from ${payload.provider} - already logged by us`);
+      return { success: true, message: 'Already logged', skipped: true };
+    }
     
     if (!payload.message || payload.message.trim() === '') {
       console.log(`⏭️ Empty message, skipping`);
@@ -225,10 +241,12 @@ async function processInternalCommentWebhook(payload) {
       console.log(`   🆔 Message ID: ${sendResult.messageId}`);
       
       // Update tracker with successful send
-      await commentTracker.updateContactActivity(payload.contactId, {
-        last_activity: Math.floor(Date.now() / 1000),
-        last_provider: sendResult.provider
-      });
+      if (commentTracker) {
+        await commentTracker.updateContactActivity(payload.contactId, {
+          last_activity: Math.floor(Date.now() / 1000),
+          last_provider: sendResult.provider
+        });
+      }
     } else {
       console.log(`\n❌ Webhook processing failed in ${duration}ms`);
       console.log(`   Error: ${sendResult.error}`);
@@ -330,7 +348,7 @@ async function sendReplyViaProvider(contactId, phoneNumber, messageText, imageUr
           mediaUrl: imageUrl,
           reference: `webhook_${contactId}_${Date.now()}`
         });
-        console.log(`   ✅ MMS sent! ID: ${result.messageId}`);
+        console.log(`   ✅ MMS sent! ID: ${result.sms_id || result.message_id || result.id}`);
       } else {
         result = await global.tallbobService.sendSMS({
           to: phoneNumber,
@@ -338,12 +356,16 @@ async function sendReplyViaProvider(contactId, phoneNumber, messageText, imageUr
           message: messageText,
           reference: `webhook_${contactId}_${Date.now()}`
         });
-        console.log(`   ✅ SMS sent! ID: ${result.messageId}`);
+        console.log(`   ✅ SMS sent! ID: ${result.sms_id || result.message_id || result.id}`);
       }
       
-      // Track this message to prevent loop
-      if (result.messageId) {
-        await markMessageAsSent(result.messageId, 'tallbob');
+      // Track this message to prevent loop - FIXED for Tall Bob
+      const tallBobMsgId = result.sms_id || result.message_id || result.id;
+      if (tallBobMsgId) {
+        await markMessageAsSent(tallBobMsgId, 'tallbob');
+        console.log(`   ✅ Tracked message ID: ${tallBobMsgId}`);
+      } else {
+        console.log(`   ⚠️ Warning: No message ID in Tall Bob response`);
       }
       
       if (conversationId && global.ghlService) {
@@ -356,7 +378,7 @@ async function sendReplyViaProvider(contactId, phoneNumber, messageText, imageUr
               mediaUrls: imageUrl ? [imageUrl] : [],
               direction: 'outbound',
               date: new Date().toISOString(),
-              providerMessageId: result.messageId,
+              providerMessageId: tallBobMsgId,
               provider: 'Tall Bob'
             }, locationId),
             0,
@@ -368,7 +390,7 @@ async function sendReplyViaProvider(contactId, phoneNumber, messageText, imageUr
         }
       }
       
-      return { success: true, provider: 'tallbob', messageId: result.messageId };
+      return { success: true, provider: 'tallbob', messageId: tallBobMsgId };
     }
     
   } catch (error) {
@@ -377,7 +399,11 @@ async function sendReplyViaProvider(contactId, phoneNumber, messageText, imageUr
   }
 }
 
-export default (app, tallbobService, ghlService, bluebubblesService) => {
+export default async (app, tallbobService, ghlService, bluebubblesService) => {
+  
+  // Initialize tracker
+  commentTracker = new CommentTracker();
+  await commentTracker.initialize();
   
   global.tallbobService = tallbobService;
   global.ghlService = ghlService;
@@ -396,14 +422,15 @@ export default (app, tallbobService, ghlService, bluebubblesService) => {
     }
   });
 
-  app.get('/webhook/status', (req, res) => {
+  app.get('/webhook/status', async (req, res) => {
+    const trackedCount = commentTracker ? await commentTracker.getCount() : 0;
     res.json({
       status: 'healthy',
       queueSize: webhookProcessingQueue.length,
       isProcessing: isProcessingWebhookQueue,
       trackedSentMessages: sentMessages.size,
       trackedProcessedEvents: processedEvents.size,
-      trackedContacts: commentTracker.getCount(),
+      trackedContacts: trackedCount,
       timestamp: new Date().toISOString()
     });
   });
@@ -582,7 +609,9 @@ export default (app, tallbobService, ghlService, bluebubblesService) => {
       console.log(`✅ Contact created/updated: ${contact.id}`);
       
       // Add to tracker for future duplicate detection
-      await commentTracker.addContact(contact.id, customerPhone);
+      if (commentTracker) {
+        await commentTracker.addContact(contact.id, customerPhone);
+      }
 
       await delay(1000);
 
@@ -669,7 +698,7 @@ export default (app, tallbobService, ghlService, bluebubblesService) => {
 
   // ==================== OUTGOING MESSAGES ====================
 
-  // TALL BOB SEND MESSAGE
+  // TALL BOB SEND MESSAGE - FIXED
   app.post('/tallbob/send-message', async (req, res) => {
     try {
       console.log(`\n${'='.repeat(60)}`);
@@ -756,10 +785,16 @@ export default (app, tallbobService, ghlService, bluebubblesService) => {
         console.log(`   ✅ SMS send response:`, JSON.stringify(result, null, 2));
       }
 
+      // FIXED: Get the correct message ID from Tall Bob response
+      const tallBobMessageId = result.sms_id || result.message_id || result.id;
+      
       // Track this message to prevent loop
-      if (result.messageId) {
-        await markMessageAsSent(result.messageId, 'tallbob');
-        console.log(`   ✅ Tracked message ID: ${result.messageId}`);
+      if (tallBobMessageId) {
+        await markMessageAsSent(tallBobMessageId, 'tallbob');
+        console.log(`   ✅ Tracked message ID: ${tallBobMessageId}`);
+      } else {
+        console.log(`   ⚠️ Warning: No message ID found in Tall Bob response`);
+        console.log(`   Response keys: ${Object.keys(result).join(', ')}`);
       }
 
       // Log to GHL
@@ -786,10 +821,16 @@ export default (app, tallbobService, ghlService, bluebubblesService) => {
           if (conversation) {
             await makeAPICall(
               () => ghlService.addMessageToConversation(conversation.id, {
-                contactId, body: message, messageType: mediaUrl ? 'MMS' : 'SMS',
-                mediaUrls: mediaUrl ? [mediaUrl] : [], direction: 'outbound',
-                date: new Date().toISOString(), providerMessageId: result.messageId,
-                fromNumber: from, toNumber: to, provider: 'Tall Bob'
+                contactId, 
+                body: message, 
+                messageType: mediaUrl ? 'MMS' : 'SMS',
+                mediaUrls: mediaUrl ? [mediaUrl] : [], 
+                direction: 'outbound',
+                date: new Date().toISOString(), 
+                providerMessageId: tallBobMessageId,
+                fromNumber: from, 
+                toNumber: to, 
+                provider: 'Tall Bob'
               }, targetLocationId),
               0,
               'addMessageToConversation'
@@ -802,8 +843,8 @@ export default (app, tallbobService, ghlService, bluebubblesService) => {
       }
 
       console.log(`\n✅✅✅ TALL BOB MESSAGE SENT SUCCESSFULLY ✅✅✅`);
-      console.log(`   🆔 Message ID: ${result.messageId}\n`);
-      res.json({ success: true, messageId: result.messageId });
+      console.log(`   🆔 Message ID: ${tallBobMessageId}\n`);
+      res.json({ success: true, messageId: tallBobMessageId });
 
     } catch (error) {
       console.error(`\n❌❌❌ TALL BOB SEND FAILED ❌❌❌`);
@@ -817,7 +858,7 @@ export default (app, tallbobService, ghlService, bluebubblesService) => {
     }
   });
 
-  // BLUEBUBBLES SEND MESSAGE - FIXED FOR YOUR SERVICE
+  // BLUEBUBBLES SEND MESSAGE
   app.post('/bluebubbles/send-message', async (req, res) => {
     try {
       console.log(`\n${'='.repeat(60)}`);
@@ -1005,7 +1046,7 @@ export default (app, tallbobService, ghlService, bluebubblesService) => {
   });
 
   app.get('/test/deduplication-stats', async (req, res) => {
-    const trackedCount = await commentTracker.getCount();
+    const trackedCount = commentTracker ? await commentTracker.getCount() : 0;
     res.json({
       success: true,
       cacheSize: processedEvents.size,
@@ -1033,6 +1074,23 @@ export default (app, tallbobService, ghlService, bluebubblesService) => {
     }
   });
 
+  app.get('/test/tracker-contents', async (req, res) => {
+    if (!commentTracker) {
+      return res.json({ success: false, error: 'Tracker not initialized' });
+    }
+    const contacts = await commentTracker.getContactsToCheck(100);
+    res.json({
+      success: true,
+      totalTracked: await commentTracker.getCount(),
+      recentContacts: contacts.map(c => ({
+        contact_id: c.contact_id,
+        phone_number: c.phone_number,
+        last_activity: c.last_activity ? new Date(c.last_activity * 1000).toISOString() : null,
+        last_comment_hash: c.last_comment_hash?.substring(0, 16) + '...'
+      }))
+    });
+  });
+
   // Add endpoint to clear duplicate cache if needed
   app.post('/test/clear-duplicate-cache', async (req, res) => {
     try {
@@ -1042,16 +1100,12 @@ export default (app, tallbobService, ghlService, bluebubblesService) => {
       sentMessages.clear();
       sentMessagesExpiry.clear();
       
-      // Clear SQLite cache (optional - uncomment if needed)
-      // await commentTracker.db.run('DELETE FROM monitored_contacts');
-      
       res.json({ 
         success: true, 
         message: 'Duplicate detection caches cleared',
         cleared: {
           processedEvents: processedEvents.size,
-          sentMessages: sentMessages.size,
-          trackedContacts: await commentTracker.getCount()
+          sentMessages: sentMessages.size
         }
       });
     } catch (error) {
