@@ -1,7 +1,7 @@
 // routes/index.js
 import { join } from 'path';
 import crypto from 'crypto';
-import CommentTracker from './tracker.service.js';
+import CommentTracker from '../services/tracker.service.js';
 
 // Initialize tracker
 const commentTracker = new CommentTracker();
