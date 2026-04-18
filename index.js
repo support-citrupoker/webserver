@@ -11,20 +11,20 @@ import { fileURLToPath } from 'url'
 import { dirname } from 'path'
 import cors from 'cors'
 import TallBobService from './services/tallbob.service.js'
-import GHLService from './services/ghl.service.js'
-import CommentTracker from './services/tracker.service.js'
 import BlueBubblesService from './services/bluebubblesService.js'
+import CommentTracker from './services/tracker.service.js'
 import routes from './routes/index.js'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
 global.__basedir = __dirname
 
-// Validate environment variables
+// Validate environment variables for sub-account tokens
 const requiredEnvVars = [
-  'GHL_PRIVATE_INTEGRATION_TOKEN',
-  'TALLBOB_GHL_LOCATION_ID',  // Changed from GHL_LOCATION_ID
-  'BLUEBUBBLES_GHL_LOCATION_ID',  // Added BlueBubbles location ID
+  'TALLBOB_GHL_PRIVATE_TOKEN',
+  'TALLBOB_GHL_LOCATION_ID',
+  'BLUEBUBBLES_GHL_PRIVATE_TOKEN',
+  'BLUEBUBBLES_GHL_LOCATION_ID',
   'TALLBOB_API_USERNAME',
   'TALLBOB_API_KEY'
 ]
@@ -36,6 +36,13 @@ for (const envVar of requiredEnvVars) {
   }
 }
 
+// Log configuration status
+console.log('\n📋 Configuration Status:')
+console.log(`✅ Tall Bob GHL Token: ${process.env.TALLBOB_GHL_PRIVATE_TOKEN ? 'Present' : 'Missing'}`)
+console.log(`✅ Tall Bob Location ID: ${process.env.TALLBOB_GHL_LOCATION_ID || 'Missing'}`)
+console.log(`✅ BlueBubbles GHL Token: ${process.env.BLUEBUBBLES_GHL_PRIVATE_TOKEN ? 'Present' : 'Missing'}`)
+console.log(`✅ BlueBubbles Location ID: ${process.env.BLUEBUBBLES_GHL_LOCATION_ID || 'Missing'}`)
+
 // Log optional BlueBubbles status
 if (process.env.BLUEBUBBLES_SERVER_URL && process.env.BLUEBUBBLES_PASSWORD) {
   console.log('✅ BlueBubbles configuration found')
@@ -45,7 +52,6 @@ if (process.env.BLUEBUBBLES_SERVER_URL && process.env.BLUEBUBBLES_PASSWORD) {
 
 // Initialize services
 const tallbobService = new TallBobService()
-const ghlService = new GHLService()
 
 // Initialize BlueBubbles (optional)
 let bluebubblesService = null
@@ -56,7 +62,7 @@ if (process.env.BLUEBUBBLES_SERVER_URL && process.env.BLUEBUBBLES_PASSWORD) {
   console.log('⚠️ BlueBubbles service not initialized (missing config)')
 }
 
-// Initialize tracker (still needed for deduplication)
+// Initialize tracker for deduplication
 const commentTracker = new CommentTracker()
 await commentTracker.initialize()
 console.log('✅ Comment tracker initialized')
@@ -96,13 +102,18 @@ app.get('/health', (req, res) => {
     timestamp: new Date().toISOString(),
     services: {
       tallbob: !!tallbobService,
-      ghl: !!ghlService,
       bluebubbles: !!bluebubblesService,
       tracker: !!commentTracker
     },
     subAccounts: {
-      tallbob: process.env.TALLBOB_GHL_LOCATION_ID,
-      bluebubbles: process.env.BLUEBUBBLES_GHL_LOCATION_ID
+      tallbob: {
+        locationId: process.env.TALLBOB_GHL_LOCATION_ID,
+        tokenConfigured: !!process.env.TALLBOB_GHL_PRIVATE_TOKEN
+      },
+      bluebubbles: {
+        locationId: process.env.BLUEBUBBLES_GHL_LOCATION_ID,
+        tokenConfigured: !!process.env.BLUEBUBBLES_GHL_PRIVATE_TOKEN
+      }
     }
   })
 })
@@ -239,80 +250,63 @@ app.get('/test/tallbob', async (req, res) => {
   }
 })
 
-// ==================== GHL TEST ENDPOINTS ====================
+// ==================== GHL CONNECTION TEST ENDPOINTS ====================
 
-// Simple test route to get all conversations for a phone number
-app.get('/test/ghl/phone-convos', async (req, res) => {
+// Test Tall Bob GHL connection
+app.get('/test/ghl/tallbob', async (req, res) => {
   try {
-    const { phone } = req.query
+    const { GHLService } = await import('./services/ghl.service.js')
+    const ghlClient = new GHLService(
+      process.env.TALLBOB_GHL_PRIVATE_TOKEN,
+      process.env.TALLBOB_GHL_LOCATION_ID
+    )
     
-    if (!phone) {
-      return res.status(400).json({ 
-        success: false, 
-        error: 'Please provide a phone number using ?phone= parameter' 
-      })
-    }
-
-    console.log(`\n📱 Getting all conversations for: ${phone}`)
-    
-    const cleanPhone = phone.replace(/\D/g, '')
-    const formattedPhone = `+${cleanPhone}`
-    console.log(`📞 Formatted: ${formattedPhone}`)
-
-    // Note: This will search in the default location (Tall Bob)
-    // You can specify which sub-account to search by passing locationId
-    const contacts = await ghlService.searchContactsByPhone(formattedPhone)
-    
-    if (!contacts || contacts.length === 0) {
-      return res.json({
-        success: false,
-        message: 'No contact found with this phone number',
-        phone: formattedPhone
-      })
-    }
-
-    const contact = contacts[0]
-    console.log(`✅ Contact: ${contact.id} - ${contact.firstName || ''} ${contact.lastName || ''}`)
-
-    const conversations = await ghlService.searchConversations({
-      contactId: contact.id,
-      limit: 50
-    })
-
-    console.log(`✅ Found ${conversations.length} conversations`)
-    
+    const result = await ghlClient.testConnection()
     res.json({
-      success: true,
-      phone: formattedPhone,
-      contact: {
-        id: contact.id,
-        name: `${contact.firstName || ''} ${contact.lastName || ''}`.trim() || 'Unknown',
-        phone: contact.phone,
-        email: contact.email
-      },
-      totalConversations: conversations.length,
-      conversations: conversations.map(c => ({
-        id: c.id,
-        type: c.type || 'SMS',
-        lastMessageAt: c.lastMessageAt,
-        lastMessageBody: c.lastMessageBody ? c.lastMessageBody.substring(0, 100) : null,
-        lastMessageDirection: c.lastMessageDirection,
-        unreadCount: c.unreadCount || 0
-      }))
+      success: result.success,
+      provider: 'Tall Bob',
+      locationId: process.env.TALLBOB_GHL_LOCATION_ID,
+      message: result.message,
+      hasContacts: result.hasContacts
     })
-
   } catch (error) {
-    console.error('❌ Error:', error)
-    res.status(500).json({ 
-      success: false, 
-      error: error.message 
+    res.status(500).json({
+      success: false,
+      provider: 'Tall Bob',
+      error: error.message
+    })
+  }
+})
+
+// Test BlueBubbles GHL connection
+app.get('/test/ghl/bluebubbles', async (req, res) => {
+  try {
+    const { GHLService } = await import('./services/ghl.service.js')
+    const ghlClient = new GHLService(
+      process.env.BLUEBUBBLES_GHL_PRIVATE_TOKEN,
+      process.env.BLUEBUBBLES_GHL_LOCATION_ID
+    )
+    
+    const result = await ghlClient.testConnection()
+    res.json({
+      success: result.success,
+      provider: 'BlueBubbles',
+      locationId: process.env.BLUEBUBBLES_GHL_LOCATION_ID,
+      message: result.message,
+      hasContacts: result.hasContacts
+    })
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      provider: 'BlueBubbles',
+      error: error.message
     })
   }
 })
 
 // ==================== MOUNT ROUTES ====================
-// Mount all webhook routes
-routes(app, tallbobService, ghlService, bluebubblesService)
+// Mount all webhook routes - pass null for ghlService since we'll create clients per request
+routes(app, tallbobService, null, bluebubblesService)
 
 // Static files
 app.use(express.static('dist'))
@@ -342,7 +336,7 @@ function startHttpServer() {
     console.log(`${'='.repeat(60)}`)
     console.log(`✅ HTTP Server running on port ${HTTP_PORT}`)
     console.log(`📱 Tall Bob service: ${tallbobService.baseURL}`)
-    console.log(`📊 GHL service: configured`)
+    console.log(`📊 GHL Service: Configured with sub-account tokens`)
     console.log(`📍 Tall Bob sub-account: ${process.env.TALLBOB_GHL_LOCATION_ID}`)
     console.log(`📍 BlueBubbles sub-account: ${process.env.BLUEBUBBLES_GHL_LOCATION_ID}`)
     if (bluebubblesService) {
@@ -382,7 +376,7 @@ if (fs.existsSync(certPath) && fs.existsSync(keyPath)) {
       console.log(`🔒 Secure access: https://cayked.store`)
       console.log(`🔒 Secure access: https://www.cayked.store`)
       console.log(`📱 Tall Bob service: ${tallbobService.baseURL}`)
-      console.log(`📊 GHL service: configured`)
+      console.log(`📊 GHL Service: Configured with sub-account tokens`)
       console.log(`📍 Tall Bob sub-account: ${process.env.TALLBOB_GHL_LOCATION_ID}`)
       console.log(`📍 BlueBubbles sub-account: ${process.env.BLUEBUBBLES_GHL_LOCATION_ID}`)
       if (bluebubblesService) {

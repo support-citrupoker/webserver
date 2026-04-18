@@ -2,6 +2,7 @@
 import { join } from 'path';
 import crypto from 'crypto';
 import CommentTracker from '../services/tracker.service.js';
+import GHLService from '../services/ghl.service.js';
 
 // Initialize tracker
 let commentTracker;
@@ -16,6 +17,12 @@ const sentMessagesExpiry = new Map();
 
 // Track pending deliveries for BlueBubbles
 let pendingDeliveries = new Map();
+
+// Store GHL clients for each sub-account
+let ghlClients = {
+  tallbob: null,
+  bluebubbles: null
+};
 
 let lastApiCallTime = 0;
 const MIN_API_DELAY = 2000;
@@ -380,29 +387,47 @@ export default async (app, tallbobService, ghlService, bluebubblesService) => {
   commentTracker = new CommentTracker();
   await commentTracker.initialize();
   
-  // Helper function to get the correct location ID based on provider
-  const getLocationIdForProvider = (provider) => {
+  // Initialize GHL clients for each sub-account
+  console.log('\n🔧 Initializing GHL clients for sub-accounts...');
+  
+  if (process.env.TALLBOB_GHL_PRIVATE_TOKEN && process.env.TALLBOB_GHL_LOCATION_ID) {
+    ghlClients.tallbob = new GHLService(
+      process.env.TALLBOB_GHL_PRIVATE_TOKEN,
+      process.env.TALLBOB_GHL_LOCATION_ID
+    );
+    console.log(`✅ Tall Bob GHL client initialized (Location: ${process.env.TALLBOB_GHL_LOCATION_ID})`);
+  } else {
+    console.error(`❌ Tall Bob GHL configuration missing!`);
+  }
+  
+  if (process.env.BLUEBUBBLES_GHL_PRIVATE_TOKEN && process.env.BLUEBUBBLES_GHL_LOCATION_ID) {
+    ghlClients.bluebubbles = new GHLService(
+      process.env.BLUEBUBBLES_GHL_PRIVATE_TOKEN,
+      process.env.BLUEBUBBLES_GHL_LOCATION_ID
+    );
+    console.log(`✅ BlueBubbles GHL client initialized (Location: ${process.env.BLUEBUBBLES_GHL_LOCATION_ID})`);
+  } else {
+    console.error(`❌ BlueBubbles GHL configuration missing!`);
+  }
+  
+  // Helper function to get the correct GHL client based on provider
+  const getGHLClientForProvider = (provider) => {
     if (provider === 'BLUEBUBBLES') {
-      const locationId = process.env.BLUEBUBBLES_GHL_LOCATION_ID;
-      if (!locationId) {
-        console.error(`❌ BLUEBUBBLES_GHL_LOCATION_ID not set in .env`);
-        throw new Error('BlueBubbles GHL Location ID not configured');
+      if (!ghlClients.bluebubbles) {
+        console.error(`❌ BlueBubbles GHL client not initialized`);
+        throw new Error('BlueBubbles GHL client not configured');
       }
-      console.log(`📍 Using BlueBubbles sub-account: ${locationId}`);
-      return locationId;
+      return ghlClients.bluebubbles;
     } else {
-      const locationId = process.env.TALLBOB_GHL_LOCATION_ID;
-      if (!locationId) {
-        console.error(`❌ TALLBOB_GHL_LOCATION_ID not set in .env`);
-        throw new Error('Tall Bob GHL Location ID not configured');
+      if (!ghlClients.tallbob) {
+        console.error(`❌ Tall Bob GHL client not initialized`);
+        throw new Error('Tall Bob GHL client not configured');
       }
-      console.log(`📍 Using Tall Bob sub-account: ${locationId}`);
-      return locationId;
+      return ghlClients.tallbob;
     }
   };
   
   global.tallbobService = tallbobService;
-  global.ghlService = ghlService;
   global.bluebubblesService = bluebubblesService;
   global.pendingDeliveries = pendingDeliveries;
 
@@ -431,6 +456,8 @@ export default async (app, tallbobService, ghlService, bluebubblesService) => {
       pendingDeliveries: pendingDeliveries.size,
       tallbobLocationId: process.env.TALLBOB_GHL_LOCATION_ID,
       bluebubblesLocationId: process.env.BLUEBUBBLES_GHL_LOCATION_ID,
+      tallbobClientReady: !!ghlClients.tallbob,
+      bluebubblesClientReady: !!ghlClients.bluebubbles,
       timestamp: new Date().toISOString()
     });
   });
@@ -438,7 +465,6 @@ export default async (app, tallbobService, ghlService, bluebubblesService) => {
   async function processIncomingMessage(messageData, provider = 'SMS') {
     console.log(`\n🔍 PROCESSING INCOMING MESSAGE from ${provider}`);
     console.log(`   Full payload keys: ${Object.keys(messageData).join(', ')}`);
-    console.log(`   Raw messageData:`, JSON.stringify(messageData, null, 2));
     
     // ========== OUTGOING MESSAGE DETECTION ==========
     
@@ -590,11 +616,12 @@ export default async (app, tallbobService, ghlService, bluebubblesService) => {
       return;
     }
 
-    // Get the appropriate location ID based on the provider
-    const locationId = getLocationIdForProvider(provider);
-    
-    if (!locationId) {
-      console.log(`❌ No location ID found for provider: ${provider}`);
+    // Get the appropriate GHL client for this provider
+    let ghlClient;
+    try {
+      ghlClient = getGHLClientForProvider(provider);
+    } catch (error) {
+      console.log(`❌ ${error.message}`);
       await unlockEvent(uniqueEventId);
       return;
     }
@@ -604,9 +631,6 @@ export default async (app, tallbobService, ghlService, bluebubblesService) => {
 
     try {
       console.log(`📝 Creating/updating contact in GHL (${provider === 'BLUEBUBBLES' ? 'BlueBubbles' : 'Tall Bob'} sub-account)...`);
-      console.log(`   Location ID: ${locationId}`);
-      console.log(`   Phone: ${customerPhone}`);
-      console.log(`   Message: ${messageText}`);
       
       const contactData = {
         phone: customerPhone,
@@ -629,7 +653,7 @@ export default async (app, tallbobService, ghlService, bluebubblesService) => {
       console.log(`   Contact Data:`, JSON.stringify(contactData, null, 2));
       
       const { contact } = await makeAPICall(
-        () => global.ghlService.upsertContact(contactData, locationId),
+        () => ghlClient.upsertContact(contactData),
         0,
         'upsertContact'
       );
@@ -644,7 +668,7 @@ export default async (app, tallbobService, ghlService, bluebubblesService) => {
 
       console.log(`💬 Getting/creating conversation...`);
       const { conversation } = await makeAPICall(
-        () => global.ghlService.getOrCreateConversation(contact.id, messageType, locationId),
+        () => ghlClient.getOrCreateConversation(contact.id, messageType),
         0,
         'getOrCreateConversation'
       );
@@ -669,7 +693,7 @@ export default async (app, tallbobService, ghlService, bluebubblesService) => {
       console.log(`   Message Payload:`, JSON.stringify(messagePayload, null, 2));
       
       await makeAPICall(
-        () => global.ghlService.addMessageToConversation(conversation.id, messagePayload, locationId),
+        () => ghlClient.addMessageToConversation(conversation.id, messagePayload),
         0,
         'addMessageToConversation'
       );
@@ -1102,6 +1126,8 @@ export default async (app, tallbobService, ghlService, bluebubblesService) => {
       pendingDeliveries: pendingDeliveries.size,
       tallbobLocationId: process.env.TALLBOB_GHL_LOCATION_ID,
       bluebubblesLocationId: process.env.BLUEBUBBLES_GHL_LOCATION_ID,
+      tallbobClientReady: !!ghlClients.tallbob,
+      bluebubblesClientReady: !!ghlClients.bluebubbles,
       events: Array.from(processedEvents).slice(-10),
       sentMessages: Array.from(sentMessages).slice(-10),
       pendingList: Array.from(pendingDeliveries.keys()).slice(-10)

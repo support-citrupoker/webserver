@@ -3,43 +3,40 @@ import { HighLevel } from '@gohighlevel/api-client';
 import axios from 'axios';
 
 class GHLService {
-  constructor() {
-    // Initialize the SDK client
+  constructor(apiToken, locationId) {
+    // Store the token and location for this instance
+    this.apiToken = apiToken;
+    this.locationId = locationId;
+    
+    // Initialize the SDK client with the specific token
     this.client = new HighLevel({
-      privateIntegrationToken: process.env.GHL_PRIVATE_INTEGRATION_TOKEN,
+      privateIntegrationToken: apiToken,
       apiVersion: process.env.GHL_API_VERSION || '2021-07-28'
     });
     
     // Also create an axios instance for direct calls
     this.apiVersion = process.env.GHL_API_VERSION || '2021-07-28';
-    this.accessToken = process.env.GHL_PRIVATE_INTEGRATION_TOKEN;
     this.baseURL = 'https://services.leadconnectorhq.com';
     
     this.axios = axios.create({
       baseURL: this.baseURL,
       headers: {
-        'Authorization': `Bearer ${this.accessToken}`,
+        'Authorization': `Bearer ${apiToken}`,
         'Content-Type': 'application/json',
         'Version': this.apiVersion
       }
     });
     
-    // Store locationId from environment
-    this.locationId = process.env.GHL_LOCATION_ID;
-    
     // Suppress SDK internal error logging for expected errors
     this._suppressSDKLogging();
     
-    console.log('🔧 GHL Client initialized');
-    console.log(`📍 Default locationId: ${this.locationId ? 'Set' : 'Not set'}`);
+    console.log(`🔧 GHL Client initialized for location: ${locationId}`);
   }
 
   /**
-   * ADD THIS METHOD - Returns the SDK client (for compatibility with polling service)
+   * Returns the SDK client
    */
-  async getClient(locationId = this.locationId) {
-    // For single location mode, just return the existing client
-    // The locationId parameter is ignored since we're using a single token
+  async getClient() {
     return this.client;
   }
 
@@ -59,11 +56,10 @@ class GHLService {
   }
 
   /**
-   * Set or update the location ID
+   * Get the location ID for this instance
    */
-  setLocationId(locationId) {
-    this.locationId = locationId;
-    console.log(`📍 Location ID set to: ${locationId}`);
+  getLocationId() {
+    return this.locationId;
   }
 
   // ==================== CONTACT METHODS ====================
