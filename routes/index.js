@@ -464,40 +464,9 @@ export default async (app, tallbobService, ghlService, bluebubblesService) => {
     if (provider === 'BLUEBUBBLES') {
       const blueData = messageData.data || messageData;
       
-      // Check if this is a delivery confirmation for a pending message
-      const isFromMe = blueData.isFromMe === true;
-      const messageGuid = blueData.guid;
-      const fromPhone = blueData.handle?.address;
-      const messageText = blueData.text || blueData.body || '';
-      
-      if (isFromMe && pendingDeliveries) {
-        // Try to find matching pending delivery by phone number and message content
-        for (const [tempId, pending] of pendingDeliveries.entries()) {
-          if (pending.to === fromPhone && pending.message === messageText) {
-            console.log(`   ✅ Delivery confirmed for message: ${tempId}`);
-            clearTimeout(pending.timeout);
-            pending.delivered = true;
-            pending.guid = messageGuid;
-            pending.deliveredAt = new Date().toISOString();
-            if (pending.resolver) {
-              pending.resolver({ 
-                delivered: true, 
-                status: 'delivered',
-                guid: messageGuid,
-                timestamp: new Date().toISOString(),
-                startTime: pending.timestamp
-              });
-            }
-            // Don't delete immediately, keep for status queries
-            setTimeout(() => {
-              pendingDeliveries.delete(tempId);
-            }, 60000);
-            break;
-          }
-        }
-      }
-      
-      if (isFromMe) {
+      // Skip if this is a message we sent (isFromMe = true)
+      // These are handled separately for delivery confirmation
+      if (blueData.isFromMe === true) {
         console.log(`⏭️ Skipping BlueBubbles message - isFromMe flag is true (this is our own message)`);
         return;
       }
@@ -513,7 +482,7 @@ export default async (app, tallbobService, ghlService, bluebubblesService) => {
       eventId = blueData.guid || messageData.guid || blueData.messageGuid || 
                 `${blueData.handle?.address}_${blueData.dateCreated}`;
                 
-      console.log(`📱 BlueBubbles message received from: ${blueData.handle?.address}, isFromMe: ${blueData.isFromMe}, GUID: ${messageIdToCheck}`);
+      console.log(`📱 BlueBubbles customer message received from: ${blueData.handle?.address}, GUID: ${messageIdToCheck}`);
     } else {
       messageIdToCheck = messageData.eventID || messageData.id;
       providerName = 'tallbob';
@@ -740,36 +709,59 @@ export default async (app, tallbobService, ghlService, bluebubblesService) => {
       console.log(`   isFromMe: ${isFromMe}`);
       console.log(`   Message: ${messageText?.substring(0, 50)}`);
       
-      // If this is a message we sent (isFromMe = true), confirm delivery
-      if (isFromMe && pendingDeliveries) {
-        // Try to find matching pending delivery by phone number and message content
-        for (const [tempId, pending] of pendingDeliveries.entries()) {
-          if (pending.to === fromPhone && pending.message === messageText) {
-            console.log(`   ✅ Delivery confirmed for message: ${tempId}`);
-            clearTimeout(pending.timeout);
-            pending.delivered = true;
-            pending.guid = messageGuid;
-            pending.deliveredAt = new Date().toISOString();
-            if (pending.resolver) {
-              pending.resolver({ 
-                delivered: true, 
-                status: 'delivered',
-                guid: messageGuid,
-                timestamp: new Date().toISOString(),
-                startTime: pending.timestamp
-              });
+      // ONLY handle delivery confirmation for messages we sent (isFromMe = true)
+      if (isFromMe) {
+        console.log(`   📤 This is an outbound message (sent by us) - checking for delivery confirmation`);
+        
+        if (pendingDeliveries && pendingDeliveries.size > 0) {
+          let matchFound = false;
+          
+          // Try to find matching pending delivery by phone number and message content
+          for (const [tempId, pending] of pendingDeliveries.entries()) {
+            // Match by phone number AND message content to ensure it's the same message
+            if (pending.to === fromPhone && pending.message === messageText) {
+              console.log(`   ✅ Delivery confirmed for message: ${tempId}`);
+              console.log(`   📊 Matched by: phone number + message content`);
+              clearTimeout(pending.timeout);
+              pending.delivered = true;
+              pending.guid = messageGuid;
+              pending.deliveredAt = new Date().toISOString();
+              if (pending.resolver) {
+                pending.resolver({ 
+                  delivered: true, 
+                  status: 'delivered',
+                  guid: messageGuid,
+                  timestamp: new Date().toISOString(),
+                  startTime: pending.timestamp
+                });
+              }
+              // Keep for a bit for status queries, then clean up
+              setTimeout(() => {
+                pendingDeliveries.delete(tempId);
+              }, 60000);
+              matchFound = true;
+              break;
             }
-            // Don't delete immediately, keep for status queries
-            setTimeout(() => {
-              pendingDeliveries.delete(tempId);
-            }, 60000);
-            break;
           }
+          
+          if (!matchFound) {
+            console.log(`   ⚠️ No matching pending delivery found for this outbound message`);
+            console.log(`   Possible reasons: delivery timeout already occurred, or message from different session`);
+          }
+        } else {
+          console.log(`   ℹ️ No pending deliveries to match (this might be an old webhook or message from another system)`);
         }
+        
+        // Always return 200 for isFromMe messages (don't process as incoming)
+        res.status(200).json({ received: true });
+        return;
       }
       
+      // For customer messages (isFromMe = false), process as incoming
+      console.log(`   📥 This is an inbound customer message - processing for GHL`);
       res.status(200).json({ received: true });
       setImmediate(() => processIncomingMessage(req.body, 'BLUEBUBBLES'));
+      
     } catch (error) {
       console.error(`❌ Error in BlueBubbles webhook:`, error.message);
       res.status(200).json({ received: true });
@@ -868,7 +860,7 @@ export default async (app, tallbobService, ghlService, bluebubblesService) => {
     }
   });
 
-  // FIXED: BlueBubbles send with webhook confirmation (fire and forget)
+  // BLUEBUBBLES SEND - Waits for webhook confirmation before returning 200
   app.post('/bluebubbles/send-message', async (req, res) => {
     try {
       console.log(`\n${'='.repeat(60)}`);
