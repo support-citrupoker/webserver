@@ -507,7 +507,7 @@ export default (app, tallbobService, ghlService, bluebubblesService) => {
 
   // ==================== OUTGOING MESSAGES ====================
 
-  // TALL BOB SEND MESSAGE - WITH DETAILED LOGGING
+  // TALL BOB SEND MESSAGE - WITH GHL WEBHOOK SUPPORT
   app.post('/tallbob/send-message', async (req, res) => {
     try {
       console.log(`\n${'='.repeat(60)}`);
@@ -516,9 +516,40 @@ export default (app, tallbobService, ghlService, bluebubblesService) => {
       console.log(`   📦 Full Payload:`, JSON.stringify(req.body, null, 2));
       console.log(`${'='.repeat(60)}`);
       
-      const { to, from, message, mediaUrl, contactId, locationId, conversationId } = req.body;
+      let { to, from, message, mediaUrl, contactId, locationId, conversationId } = req.body;
       
-      console.log(`\n📋 Extracted fields:`);
+      // SUPPORT GHL WEBHOOK FORMAT
+      if (!to && req.body.phone) {
+        to = req.body.phone;
+        console.log(`   🔄 Using 'phone' field as 'to': ${to}`);
+      }
+      
+      if (!from) {
+        from = process.env.TALLBOB_NUMBER || '+61428616133';
+        console.log(`   🔄 Using default 'from': ${from}`);
+      }
+      
+      if (!message && req.body.message) {
+        message = req.body.message;
+        console.log(`   🔄 Using 'message' field: ${message}`);
+      }
+      
+      if (!contactId && req.body.contactId) {
+        contactId = req.body.contactId;
+        console.log(`   🔄 Using 'contactId' field: ${contactId}`);
+      }
+      
+      if (!conversationId && req.body.conversationId) {
+        conversationId = req.body.conversationId;
+        console.log(`   🔄 Using 'conversationId' field: ${conversationId}`);
+      }
+      
+      if (!locationId && req.body.locationId) {
+        locationId = req.body.locationId;
+        console.log(`   🔄 Using 'locationId' field: ${locationId}`);
+      }
+      
+      console.log(`\n📋 Extracted fields after mapping:`);
       console.log(`   📞 To: ${to}`);
       console.log(`   📞 From: ${from}`);
       console.log(`   💬 Message: "${message?.substring(0, 100)}${message?.length > 100 ? '...' : ''}"`);
@@ -528,11 +559,15 @@ export default (app, tallbobService, ghlService, bluebubblesService) => {
       console.log(`   📍 Location ID: ${locationId || 'Using default'}`);
 
       if (!to || !from || !message) {
-        console.log(`\n❌ Missing required fields:`);
+        console.log(`\n❌ Missing required fields after mapping:`);
         if (!to) console.log(`   - to is missing`);
         if (!from) console.log(`   - from is missing`);
         if (!message) console.log(`   - message is missing`);
-        return res.status(400).json({ success: false, error: 'Missing required fields: to, from, and message are required' });
+        return res.status(400).json({ 
+          success: false, 
+          error: 'Missing required fields: to, from, and message are required',
+          received: { to, from, message }
+        });
       }
 
       console.log(`\n📤 Attempting to send via Tall Bob...`);
@@ -614,7 +649,7 @@ export default (app, tallbobService, ghlService, bluebubblesService) => {
     }
   });
 
-  // BLUEBUBBLES SEND MESSAGE - WITH DETAILED LOGGING
+  // BLUEBUBBLES SEND MESSAGE - WITH GHL WEBHOOK SUPPORT
   app.post('/bluebubbles/send-message', async (req, res) => {
     try {
       console.log(`\n${'='.repeat(60)}`);
@@ -623,9 +658,40 @@ export default (app, tallbobService, ghlService, bluebubblesService) => {
       console.log(`   📦 Full Payload:`, JSON.stringify(req.body, null, 2));
       console.log(`${'='.repeat(60)}`);
       
-      const { to, from, message, mediaUrl, contactId, locationId, conversationId, effectId } = req.body;
+      let { to, from, message, mediaUrl, contactId, locationId, conversationId, effectId } = req.body;
       
-      console.log(`\n📋 Extracted fields:`);
+      // SUPPORT GHL WEBHOOK FORMAT
+      if (!to && req.body.phone) {
+        to = req.body.phone;
+        console.log(`   🔄 Using 'phone' field as 'to': ${to}`);
+      }
+      
+      if (!from) {
+        from = process.env.BLUEBUBBLES_IMESSAGE_ACCOUNT || process.env.TALLBOB_NUMBER || '+61428616133';
+        console.log(`   🔄 Using default 'from': ${from}`);
+      }
+      
+      if (!message && req.body.message) {
+        message = req.body.message;
+        console.log(`   🔄 Using 'message' field: ${message}`);
+      }
+      
+      if (!contactId && req.body.contactId) {
+        contactId = req.body.contactId;
+        console.log(`   🔄 Using 'contactId' field: ${contactId}`);
+      }
+      
+      if (!conversationId && req.body.conversationId) {
+        conversationId = req.body.conversationId;
+        console.log(`   🔄 Using 'conversationId' field: ${conversationId}`);
+      }
+      
+      if (!locationId && req.body.locationId) {
+        locationId = req.body.locationId;
+        console.log(`   🔄 Using 'locationId' field: ${locationId}`);
+      }
+      
+      console.log(`\n📋 Extracted fields after mapping:`);
       console.log(`   📞 To: ${to}`);
       console.log(`   📞 From: ${from}`);
       console.log(`   💬 Message: "${message?.substring(0, 100)}${message?.length > 100 ? '...' : ''}"`);
@@ -636,11 +702,15 @@ export default (app, tallbobService, ghlService, bluebubblesService) => {
       console.log(`   ✨ Effect ID: ${effectId || 'None'}`);
 
       if (!to || !from || !message) {
-        console.log(`\n❌ Missing required fields:`);
+        console.log(`\n❌ Missing required fields after mapping:`);
         if (!to) console.log(`   - to is missing`);
         if (!from) console.log(`   - from is missing`);
         if (!message) console.log(`   - message is missing`);
-        return res.status(400).json({ success: false, error: 'Missing required fields: to, from, and message are required' });
+        return res.status(400).json({ 
+          success: false, 
+          error: 'Missing required fields: to, from, and message are required',
+          received: { to, from, message }
+        });
       }
 
       // Use fromAccount from env if not provided
