@@ -301,27 +301,7 @@ async function sendReplyViaProvider(contactId, phoneNumber, messageText, imageUr
         await markMessageAsSent(result.guid, 'bluebubbles');
       }
       
-      if (conversationId && global.ghlService) {
-        try {
-          await makeAPICall(
-            () => global.ghlService.addMessageToConversation(conversationId, {
-              contactId: contactId,
-              body: messageText,
-              messageType: imageUrl ? 'MMS' : 'SMS',
-              mediaUrls: imageUrl ? [imageUrl] : [],
-              direction: 'outbound',
-              date: new Date().toISOString(),
-              providerMessageId: result.guid,
-              provider: 'BlueBubbles'
-            }, locationId),
-            0,
-            'addMessageToConversation'
-          );
-          console.log(`   📝 Logged to GHL conversation`);
-        } catch (ghlError) {
-          console.log(`   ⚠️ Could not log to GHL: ${ghlError.message}`);
-        }
-      }
+      // NO GHL LOGGING HERE - Only track the message
       
       return { success: true, provider: 'bluebubbles', messageId: result.guid };
       
@@ -357,27 +337,7 @@ async function sendReplyViaProvider(contactId, phoneNumber, messageText, imageUr
         console.log(`   ⚠️ Warning: No message ID in Tall Bob response`);
       }
       
-      if (conversationId && global.ghlService) {
-        try {
-          await makeAPICall(
-            () => global.ghlService.addMessageToConversation(conversationId, {
-              contactId: contactId,
-              body: messageText,
-              messageType: imageUrl ? 'MMS' : 'SMS',
-              mediaUrls: imageUrl ? [imageUrl] : [],
-              direction: 'outbound',
-              date: new Date().toISOString(),
-              providerMessageId: tallBobMsgId,
-              provider: 'Tall Bob'
-            }, locationId),
-            0,
-            'addMessageToConversation'
-          );
-          console.log(`   📝 Logged to GHL conversation`);
-        } catch (ghlError) {
-          console.log(`   ⚠️ Could not log to GHL: ${ghlError.message}`);
-        }
-      }
+      // NO GHL LOGGING HERE - Only track the message
       
       return { success: true, provider: 'tallbob', messageId: tallBobMsgId };
     }
@@ -659,7 +619,7 @@ export default async (app, tallbobService, ghlService, bluebubblesService) => {
       );
 
       await markEventProcessed(uniqueEventId);
-      console.log(`✅ Message successfully logged to GHL`);
+      console.log(`✅ Customer message successfully logged to GHL as INBOUND`);
 
     } catch (error) {
       console.error(`❌ Error processing incoming message:`, error.message);
@@ -714,6 +674,8 @@ export default async (app, tallbobService, ghlService, bluebubblesService) => {
   });
 
   // ==================== OUTGOING MESSAGES ====================
+  // NOTE: These endpoints ONLY send messages - they do NOT log to GHL
+  // Only incoming messages from customers are logged to GHL
 
   app.post('/tallbob/send-message', async (req, res) => {
     try {
@@ -723,7 +685,7 @@ export default async (app, tallbobService, ghlService, bluebubblesService) => {
       console.log(`   📦 Full Payload:`, JSON.stringify(req.body, null, 2));
       console.log(`${'='.repeat(60)}`);
       
-      let { to, from, message, mediaUrl, contactId, locationId, conversationId } = req.body;
+      let { to, from, message, mediaUrl } = req.body;
       
       if (!to && req.body.phone) {
         to = req.body.phone;
@@ -740,29 +702,11 @@ export default async (app, tallbobService, ghlService, bluebubblesService) => {
         console.log(`   🔄 Using 'message' field: ${message}`);
       }
       
-      if (!contactId && req.body.contactId) {
-        contactId = req.body.contactId;
-        console.log(`   🔄 Using 'contactId' field: ${contactId}`);
-      }
-      
-      if (!conversationId && req.body.conversationId) {
-        conversationId = req.body.conversationId;
-        console.log(`   🔄 Using 'conversationId' field: ${conversationId}`);
-      }
-      
-      if (!locationId && req.body.locationId) {
-        locationId = req.body.locationId;
-        console.log(`   🔄 Using 'locationId' field: ${locationId}`);
-      }
-      
       console.log(`\n📋 Extracted fields after mapping:`);
       console.log(`   📞 To: ${to}`);
       console.log(`   📞 From: ${from}`);
       console.log(`   💬 Message: "${message?.substring(0, 100)}${message?.length > 100 ? '...' : ''}"`);
       console.log(`   🖼️ Media URL: ${mediaUrl || 'None'}`);
-      console.log(`   🆔 Contact ID: ${contactId || 'Not provided'}`);
-      console.log(`   🆔 Conversation ID: ${conversationId || 'Not provided'}`);
-      console.log(`   📍 Location ID: ${locationId || 'Using default'}`);
 
       if (!to || !from || !message) {
         console.log(`\n❌ Missing required fields after mapping:`);
@@ -786,7 +730,7 @@ export default async (app, tallbobService, ghlService, bluebubblesService) => {
           from, 
           message, 
           mediaUrl, 
-          reference: `ghl_${Date.now()}` 
+          reference: `send_${Date.now()}` 
         });
         console.log(`   ✅ MMS send response:`, JSON.stringify(result, null, 2));
       } else {
@@ -795,7 +739,7 @@ export default async (app, tallbobService, ghlService, bluebubblesService) => {
           to, 
           from, 
           message, 
-          reference: `ghl_${Date.now()}` 
+          reference: `send_${Date.now()}` 
         });
         console.log(`   ✅ SMS send response:`, JSON.stringify(result, null, 2));
       }
@@ -805,63 +749,16 @@ export default async (app, tallbobService, ghlService, bluebubblesService) => {
       if (tallBobMessageId) {
         await markMessageAsSent(tallBobMessageId, 'tallbob');
         console.log(`   ✅ Tracked message ID: ${tallBobMessageId}`);
-      } else {
-        console.log(`   ⚠️ Warning: No message ID found in Tall Bob response`);
-        console.log(`   Response keys: ${Object.keys(result).join(', ')}`);
-      }
-
-      if (contactId || conversationId) {
-        console.log(`\n📝 Logging message to GHL...`);
-        try {
-          const targetLocationId = locationId || ghlService.locationId;
-          let conversation;
-          
-          if (conversationId) {
-            console.log(`   Using existing conversation: ${conversationId}`);
-            conversation = { id: conversationId };
-          } else if (contactId) {
-            console.log(`   Creating/getting conversation for contact: ${contactId}`);
-            const convResult = await makeAPICall(
-              () => ghlService.getOrCreateConversation(contactId, mediaUrl ? 'MMS' : 'SMS', targetLocationId),
-              0,
-              'getOrCreateConversation'
-            );
-            conversation = convResult.conversation;
-            console.log(`   ✅ Conversation: ${conversation.id}`);
-          }
-
-          if (conversation) {
-            await makeAPICall(
-              () => ghlService.addMessageToConversation(conversation.id, {
-                contactId, 
-                body: message, 
-                messageType: mediaUrl ? 'MMS' : 'SMS',
-                mediaUrls: mediaUrl ? [mediaUrl] : [], 
-                direction: 'outbound',
-                date: new Date().toISOString(), 
-                providerMessageId: tallBobMessageId,
-                fromNumber: from, 
-                toNumber: to, 
-                provider: 'Tall Bob'
-              }, targetLocationId),
-              0,
-              'addMessageToConversation'
-            );
-            console.log(`   ✅ Message logged to GHL conversation`);
-          }
-        } catch (ghlError) {
-          console.error(`   ⚠️ Failed to log to GHL: ${ghlError.message}`);
-        }
       }
 
       console.log(`\n✅✅✅ TALL BOB MESSAGE SENT SUCCESSFULLY ✅✅✅`);
-      console.log(`   🆔 Message ID: ${tallBobMessageId}\n`);
+      console.log(`   🆔 Message ID: ${tallBobMessageId}`);
+      console.log(`   ⚠️ NOT logged to GHL - only customer replies are logged\n`);
       res.json({ success: true, messageId: tallBobMessageId });
 
     } catch (error) {
       console.error(`\n❌❌❌ TALL BOB SEND FAILED ❌❌❌`);
       console.error(`   Error message: ${error.message}`);
-      console.error(`   Error stack: ${error.stack}`);
       if (error.response) {
         console.error(`   Response status: ${error.response.status}`);
         console.error(`   Response data:`, error.response.data);
@@ -878,7 +775,7 @@ export default async (app, tallbobService, ghlService, bluebubblesService) => {
       console.log(`   📦 Full Payload:`, JSON.stringify(req.body, null, 2));
       console.log(`${'='.repeat(60)}`);
       
-      let { to, from, message, mediaUrl, contactId, locationId, conversationId, effectId } = req.body;
+      let { to, message, mediaUrl, effectId } = req.body;
       
       if (!to && req.body.phone) {
         to = req.body.phone;
@@ -890,28 +787,10 @@ export default async (app, tallbobService, ghlService, bluebubblesService) => {
         console.log(`   🔄 Using 'message' field: ${message}`);
       }
       
-      if (!contactId && req.body.contactId) {
-        contactId = req.body.contactId;
-        console.log(`   🔄 Using 'contactId' field: ${contactId}`);
-      }
-      
-      if (!conversationId && req.body.conversationId) {
-        conversationId = req.body.conversationId;
-        console.log(`   🔄 Using 'conversationId' field: ${conversationId}`);
-      }
-      
-      if (!locationId && req.body.locationId) {
-        locationId = req.body.locationId;
-        console.log(`   🔄 Using 'locationId' field: ${locationId}`);
-      }
-      
       console.log(`\n📋 Extracted fields after mapping:`);
       console.log(`   📞 To: ${to}`);
       console.log(`   💬 Message: "${message?.substring(0, 100)}${message?.length > 100 ? '...' : ''}"`);
       console.log(`   🖼️ Media URL: ${mediaUrl || 'None'}`);
-      console.log(`   🆔 Contact ID: ${contactId || 'Not provided'}`);
-      console.log(`   🆔 Conversation ID: ${conversationId || 'Not provided'}`);
-      console.log(`   📍 Location ID: ${locationId || 'Using default'}`);
       console.log(`   ✨ Effect ID: ${effectId || 'None'}`);
 
       if (!to || !message) {
@@ -954,64 +833,17 @@ export default async (app, tallbobService, ghlService, bluebubblesService) => {
         console.log(`   ✅ Tracked message GUID: ${result.guid}`);
       }
 
-      if (contactId || conversationId) {
-        console.log(`\n📝 Logging message to GHL...`);
-        try {
-          const targetLocationId = locationId || ghlService.locationId;
-          let conversation;
-          
-          if (conversationId) {
-            console.log(`   Using existing conversation: ${conversationId}`);
-            conversation = { id: conversationId };
-          } else if (contactId) {
-            console.log(`   Creating/getting conversation for contact: ${contactId}`);
-            const convResult = await makeAPICall(
-              () => ghlService.getOrCreateConversation(contactId, mediaUrl ? 'MMS' : 'SMS', targetLocationId),
-              0,
-              'getOrCreateConversation'
-            );
-            conversation = convResult.conversation;
-            console.log(`   ✅ Conversation: ${conversation.id}`);
-          }
-
-          if (conversation) {
-            await makeAPICall(
-              () => ghlService.addMessageToConversation(conversation.id, {
-                contactId: contactId,
-                body: message,
-                messageType: mediaUrl ? 'MMS' : 'SMS',
-                mediaUrls: mediaUrl ? [mediaUrl] : [],
-                direction: 'outbound',
-                date: new Date().toISOString(),
-                providerMessageId: result.guid,
-                fromNumber: process.env.BLUEBUBBLES_IMESSAGE_ACCOUNT || 'iMessage',
-                toNumber: cleanTo,
-                provider: 'BlueBubbles'
-              }, targetLocationId),
-              0,
-              'addMessageToConversation'
-            );
-            console.log(`   ✅ Message logged to GHL conversation`);
-          }
-        } catch (ghlError) {
-          console.error(`   ⚠️ Failed to log to GHL: ${ghlError.message}`);
-        }
-      }
-
       console.log(`\n✅✅✅ BLUEBUBBLES MESSAGE SENT SUCCESSFULLY ✅✅✅`);
-      console.log(`   🆔 Message ID: ${result.guid}\n`);
+      console.log(`   🆔 Message ID: ${result.guid}`);
+      console.log(`   ⚠️ NOT logged to GHL - only customer replies are logged\n`);
       res.json({ success: true, messageId: result.guid });
 
     } catch (error) {
       console.error(`\n❌❌❌ BLUEBUBBLES SEND FAILED ❌❌❌`);
       console.error(`   Error message: ${error.message}`);
-      console.error(`   Error stack: ${error.stack}`);
       if (error.response) {
         console.error(`   Response status: ${error.response.status}`);
         console.error(`   Response data:`, error.response.data);
-      }
-      if (error.request) {
-        console.error(`   Request was made but no response received`);
       }
       res.status(500).json({ success: false, error: error.message });
     }
